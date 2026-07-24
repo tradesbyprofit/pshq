@@ -1,0 +1,48 @@
+# ICC scanner — runs every 15 minutes on GitHub's servers (free, no machine needed).
+# Reads credentials from GitHub Secrets (never stored in code).
+# Skips automatically when forex is closed. Persists the weekly-trade counter back
+# to the repo (so the 1-2/week cap survives across runs).
+name: ICC Scan
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"      # every 15 min, UTC
+  workflow_dispatch: {}          # run manually anytime: Actions tab -> "Run workflow"
+
+permissions:
+  contents: write                # lets the job save the trade-counter state file
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ICC scan
+        env:
+          OANDA_API_TOKEN:  ${{ secrets.OANDA_API_TOKEN }}
+          OANDA_ACCOUNT_ID: ${{ secrets.OANDA_ACCOUNT_ID }}
+          TG_BOT_TOKEN:     ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID:       ${{ secrets.TG_CHAT_ID }}
+        run: |
+          python3 scanner.py --oanda --telegram --paper --market-hours-only
+
+      - name: Save weekly-trade counter (only if a trade changed it)
+        run: |
+          git config user.name  "icc-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scanner_state.json 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "state: weekly trade counter update"
+            git push
+          else
+            echo "No state change (no trade taken) — nothing to save."
+          fi
