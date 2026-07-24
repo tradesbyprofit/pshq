@@ -1,0 +1,133 @@
+// =============================================================================
+//  ICC — Indication / Correction / Continuation  (Trades By Sci method)
+//  Pure price-action. No indicators. Plots swing structure + marks indications.
+//  Drop on a TradingView chart (XAUUSD or BTCUSD), 1H or 4H, add alerts.
+//
+//  HOW TO USE (matches the Python icc_engine.py):
+//   1) Load XAUUSD or BTCUSD on 1H (or 4H if 1H is choppy).
+//   2) The script labels pivots HH/HL/LH/LL and draws the active swing levels.
+//   3) When price body-closes beyond a swing = INDICATION (blue up / red down).
+//      -> Do NOT trade yet. This just sets bias + future target.
+//   4) Wait for the CORRECTION (pullback). The "Setup Ready" label fires when
+//      price reclaims the level a SECOND time (continuation) = your entry.
+//   5) Set the built-in alerts (see bottom) so TV notifies you — you don't stare.
+//
+//  This is tooling, not financial advice. Demo first.
+// =============================================================================
+//@version=5
+indicator("ICC — Trades By Sci Method", shorttitle="ICC", overlay=true, max_labels_count=500)
+
+// --- inputs -----------------------------------------------------------------
+left   = input.int(2, "Pivot left bars",  minval=1, group="Swings")
+right  = input.int(2, "Pivot right bars", minval=1, group="Swings")
+useBody= input.bool(true, "Use body close for levels (Sci's rule)", group="Swings")
+minRR  = input.float(1.0, "Min R:R to flag Setup Ready", step=0.1, group="Filters")
+
+// --- pivot detection (fractal) ---------------------------------------------
+ph = ta.pivothigh(high, left, right)
+pl = ta.pivotlow(low,  left, right)
+
+var float lastHigh = na
+var float lastLow  = na
+var float prevHigh = na
+var float prevLow  = na
+var float activeHigh = na   // the most recent confirmed swing high (resistance)
+var float activeLow  = na   // the most recent confirmed swing low (support)
+
+// a pivot is confirmed `right` bars after it formed -> bar_index - right
+if not na(ph)
+    lvl = useBody ? close[left] : ph   // level = body close of the pivot candle
+    prevHigh := lastHigh
+    lastHigh := lvl
+    activeHigh := lvl
+    hh = not na(prevHigh) and lvl > prevHigh
+    label.new(bar_index - right, ph + (hh ? 1 : 0), (hh ? "HH" : "LH"),
+              style=label.style_label_down, color=color.new(color.gray,100),
+              textcolor= hh ? color.lime : color.red, size=size.tiny)
+    line.new(bar_index - right, lvl, bar_index, lvl, color=color.new(color.gray,70), width=1)
+
+if not na(pl)
+    lvl = useBody ? close[left] : pl
+    prevLow := lastLow
+    lastLow := lvl
+    activeLow := lvl
+    ll = not na(prevLow) and lvl < prevLow
+    label.new(bar_index - right, pl - (ll ? 1 : 0), (ll ? "LL" : "HL"),
+              style=label.style_label_up, color=color.new(color.gray,100),
+              textcolor= ll ? color.red : color.lime, size=size.tiny)
+    line.new(bar_index - right, lvl, bar_index, lvl, color=color.new(color.gray,70), width=1)
+
+// --- trend classification (last 2 highs / last 2 lows) ----------------------
+hh2 = not na(lastHigh) and not na(prevHigh) and lastHigh > prevHigh
+hl2 = not na(lastLow)  and not na(prevLow)  and lastLow  > prevLow
+lh2 = not na(lastHigh) and not na(prevHigh) and lastHigh < prevHigh
+ll2 = not na(lastLow)  and not na(prevLow)  and lastLow  < prevLow
+trendBull = hh2 and hl2
+trendBear = lh2 and ll2
+
+// --- indication: body close beyond active swing = new extreme ---------------
+bullInd = trendBull and not na(activeHigh) and ta.crossover(close, activeHigh)
+bearInd = trendBear and not na(activeLow)  and ta.crossunder(close, activeLow)
+
+var float indLevel = na
+var float indTarget = na
+var int   indDir = 0     // 1 bull, -1 bear
+var bool  inCorrection = false
+
+if bullInd
+    indLevel := activeHigh
+    indTarget := ta.highest(close, 20)
+    indDir := 1
+    inCorrection := true
+    label.new(bar_index, low, "INDICATION ▲\n" + str.tostring(indLevel,"#.##"),
+              style=label.style_label_up, color=color.blue, textcolor=color.white, size=size.small)
+    alert("ICC INDICATION (bull) on " + syminfo.ticker + " @ " + str.tostring(close,"#.##"), alert.freq_once_per_bar_close)
+
+if bearInd
+    indLevel := activeLow
+    indTarget := ta.lowest(close, 20)
+    indDir := -1
+    inCorrection := true
+    label.new(bar_index, high, "INDICATION ▼\n" + str.tostring(indLevel,"#.##"),
+              style=label.style_label_down, color=color.orange, textcolor=color.white, size=size.small)
+    alert("ICC INDICATION (bear) on " + syminfo.ticker + " @ " + str.tostring(close,"#.##"), alert.freq_once_per_bar_close)
+
+// --- continuation: second-time reclaim of the level --------------------------
+// bull: after indication, once price pulls back then body-closes back ABOVE indLevel
+reclaimBull = indDir == 1 and inCorrection and ta.crossover(close, indLevel)
+reclaimBear = indDir == -1 and inCorrection and ta.crossunder(close, indLevel)
+
+// risk:reward check (approx, using recent correction extreme as stop)
+corrStopBull = ta.lowest(low, 20)
+corrStopBear = ta.highest(high, 20)
+rrBull = (indTarget - indLevel) / math.max(indLevel - corrStopBull, syminfo.mintick)
+rrBear = (indLevel - indTarget) / math.max(corrStopBear - indLevel, syminfo.mintick)
+
+setupReady = (reclaimBull and rrBull >= minRR) or (reclaimBear and rrBear >= minRR)
+if setupReady
+    dirTxt = reclaimBull ? "BUY" : "SELL"
+    stop   = reclaimBull ? corrStopBull : corrStopBear
+    label.new(bar_index, reclaimBull ? low : high,
+       "SETUP READY " + dirTxt + "\nentry " + str.tostring(close,"#.##") +
+       "\nstop "  + str.tostring(stop,"#.##") +
+       "\nTP "    + str.tostring(indTarget,"#.##") +
+       "\nRR "    + str.tostring(reclaimBull?rrBull:rrBear,"#.##"),
+       style= reclaimBull ? label.style_label_up : label.style_label_down,
+       color= reclaimBull ? color.green : color.red, textcolor=color.white, size=size.normal)
+    inCorrection := false   // consume setup; wait for a fresh indication
+    alert("ICC SETUP READY " + dirTxt + " " + syminfo.ticker +
+          " entry " + str.tostring(close,"#.##") + " stop " + str.tostring(stop,"#.##") +
+          " TP " + str.tostring(indTarget,"#.##"), alert.freq_once_per_bar_close)
+
+// --- status table (so you can read bias at a glance) ------------------------
+var table tb = table.new(position.top_right, 2, 4, bgcolor=color.new(color.black,10), border_width=1)
+if barstate.islast
+    table.cell(tb,0,0,"Trend",     text_color=color.white)
+    table.cell(tb,1,0, trendBull?"BULL":trendBear?"BEAR":"RANGE/NO-TRADE",
+               text_color=trendBull?color.lime:trendBear?color.red:color.gray)
+    table.cell(tb,0,1,"Indication",text_color=color.white)
+    table.cell(tb,1,1, indDir==1?"BULL":indDir==-1?"BEAR":"none", text_color=color.white)
+    table.cell(tb,0,2,"State",     text_color=color.white)
+    table.cell(tb,1,2, inCorrection?"waiting continuation":"idle", text_color=color.yellow)
+    table.cell(tb,0,3,"Tip",       text_color=color.gray)
+    table.cell(tb,1,3,"no setup = no trade", text_color=color.gray)
