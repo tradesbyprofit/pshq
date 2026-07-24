@@ -104,7 +104,12 @@ def scan_once(feed: DataFeed, notifier: Notifier, gov: Governor, broker=None):
             htf = feed.candles(sym, HTF, 120)
             ltf = feed.candles(sym, LTF, 120)
         except Exception as e:
-            print(f"  {sym}: data error {e}"); continue
+            msg = str(e)
+            if "maintenance" in msg or "503" in msg:
+                print(f"  {sym}: OANDA under maintenance — will retry next run.")
+            else:
+                print(f"  {sym}: data error {e}")
+            continue
         sig = evaluate(sym, htf, ltf, when=htf[-1].time if htf else dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
         if sig.action == "SETUP":
             if not gov.can_trade(taken):
