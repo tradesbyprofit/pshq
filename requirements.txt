@@ -1,0 +1,4 @@
+# ICC bot dependencies.
+# The OANDA + Telegram path uses only the Python standard library (no installs).
+# ccxt is only needed for the optional crypto-data fallback (feeds.py).
+ccxt>=4.0
