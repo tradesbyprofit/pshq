@@ -1,0 +1,8 @@
+# Never commit secrets or runtime junk
+.env
+__pycache__/
+*.pyc
+watch.html
+*.log
+# NOTE: scanner_state.json IS tracked (it holds the weekly trade counter;
+# GitHub Actions commits it back so the 1-2/week cap persists across runs).
