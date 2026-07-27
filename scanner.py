@@ -81,6 +81,8 @@ class ConsoleNotifier:
               f"{sig.direction.value} — {sig.reason}")
         if sig.action=="SETUP":
             print(f"     entry={sig.entry} stop={sig.stop} target={sig.target} R:R={sig.rr}")
+    def send_text(self, text: str):
+        print(f"  [lifecycle] {text}")
 
 
 # ---- 4. persistence (so the weekly counter survives restarts) ---------------
@@ -102,7 +104,7 @@ def scan_once(feed: DataFeed, notifier: Notifier, gov: Governor, broker=None):
           f"{taken}/{gov.target_per_week} target ({gov.max_per_week} hard cap) ===")
     # manage already-open trades FIRST (partials, breakeven, trail, structure exit, max-hold)
     if broker is not None:
-        for a in trade_manager.manage(feed, broker):
+        for a in trade_manager.manage(feed, broker, notifier):
             print(f"  [manage] {a}")
     for sym in WATCH:
         try:
@@ -195,6 +197,10 @@ if __name__ == "__main__":
         def send(self, sig):
             for n in self.ns:
                 try: n.send(sig)
+                except Exception as e: print(f"notifier error: {e}")
+        def send_text(self, text):
+            for n in self.ns:
+                try: n.send_text(text)
                 except Exception as e: print(f"notifier error: {e}")
     notifier = Multi(notifiers)
 
