@@ -15,6 +15,7 @@ import datetime as dt, json, time, os
 from dataclasses import dataclass, asdict
 from typing import List, Protocol
 from icc_engine import Candle, evaluate, Signal, Direction
+import trade_manager
 
 # OANDA demo offers 68 forex pairs (no metals/crypto yet).
 # Watchlist = liquid majors + the most popular volatile cross (great ICC structure).
@@ -99,6 +100,10 @@ def scan_once(feed: DataFeed, notifier: Notifier, gov: Governor, broker=None):
     taken = state["taken"].get(wk, 0)
     print(f"\n=== SCAN @ {dt.datetime.now(dt.timezone.utc).replace(tzinfo=None):%H:%M:%S} UTC | week {wk}: "
           f"{taken}/{gov.target_per_week} target ({gov.max_per_week} hard cap) ===")
+    # manage already-open trades FIRST (partials, breakeven, trail, structure exit, max-hold)
+    if broker is not None:
+        for a in trade_manager.manage(feed, broker):
+            print(f"  [manage] {a}")
     for sym in WATCH:
         try:
             htf = feed.candles(sym, HTF, 120)
@@ -118,8 +123,8 @@ def scan_once(feed: DataFeed, notifier: Notifier, gov: Governor, broker=None):
                     when=sig.when, checks={"cap": f"{taken}/{gov.max_per_week}"}))
             else:
                 notifier.send(sig)
-                if broker is not None:           # optional paper auto-execution
-                    res = broker.execute(sig)
+                if broker is not None:           # managed paper auto-execution
+                    res = trade_manager.open_trade(broker, sig)
                     print(f"  [paper] {sym}: {res}")
                 taken += 1
                 state["taken"][wk] = taken
