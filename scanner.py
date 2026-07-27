@@ -19,7 +19,8 @@ import trade_manager
 
 # OANDA demo offers 68 forex pairs (no metals/crypto yet).
 # Watchlist = liquid majors + the most popular volatile cross (great ICC structure).
-WATCH = ["EURUSD", "GBPUSD", "USDJPY", "GBPJPY"]
+WATCH = ["EURUSD", "GBPUSD", "USDJPY", "GBPJPY", "BTCUSD", "XAUUSD"]
+ALERT_ONLY = {"BTCUSD", "XAUUSD"}   # monitored + alerted, NOT auto-traded (OANDA demo lacks them)
 HTF = "1H"; LTF = "15M"               # markup TF / entry TF (4H/5M as alternates)
 STATE_FILE = "scanner_state.json"
 
@@ -119,7 +120,11 @@ def scan_once(feed: DataFeed, notifier: Notifier, gov: Governor, broker=None):
             continue
         sig = evaluate(sym, htf, ltf, when=htf[-1].time if htf else dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
         if sig.action == "SETUP":
-            if not gov.can_trade(taken):
+            if sym in ALERT_ONLY:
+                # monitor + alert only (OANDA demo can't trade BTC/gold) — no execution, no cap
+                notifier.send(sig)
+                print(f"  [alert-only] {sym}: ICC setup — alert sent, not auto-traded.")
+            elif not gov.can_trade(taken):
                 notifier.send(Signal("NO_TRADE", sym, sig.direction,
                     f"setup found but weekly cap reached ({taken}/{gov.max_per_week}) — DO NOT CHASE",
                     when=sig.when, checks={"cap": f"{taken}/{gov.max_per_week}"}))
@@ -159,8 +164,9 @@ if __name__ == "__main__":
     try:
         if args.oanda:
             from oanda_feed import OANDADataFeed
-            feed = OANDADataFeed(verbose=True)
-            src = "OANDA practice (real spot)"
+            from feeds import MultiFeed
+            feed = MultiFeed(OANDADataFeed(), verbose=False)
+            src = "OANDA (forex) + CCXT (BTC/gold)"
         elif args.demo:
             feed = DemoFeed(); src = "DEMO (synthetic)"
         else:
