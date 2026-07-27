@@ -34,6 +34,18 @@ def resolve_instrument(symbol: str) -> str:
     return s
 
 
+def fmt_units(instrument: str, units: float) -> str:
+    """Forex -> integer units; metals/crypto -> 2 decimals."""
+    parts = instrument.split("_")
+    is_fx = len(parts) == 2 and len(parts[0]) == 3 and len(parts[1]) == 3
+    return str(int(round(units))) if is_fx else f"{units:.2f}"
+
+
+def price_precision(instrument: str) -> int:
+    """Decimal places for price fields: JPY pairs 3, other FX 5, else 2."""
+    return 3 if instrument.endswith("_JPY") else 5 if "_" in instrument else 2
+
+
 def _req(path: str, method="GET", token=None, body=None):
     token = token or os.getenv("OANDA_API_TOKEN")
     if not token:
@@ -114,6 +126,90 @@ class OANDAPaperBroker:
         for t in self.open_trades():
             results.append(self.close_trade(t["id"]))
         return results
+
+    # ---------- trade management methods (partials / trailing / SL moves) ----------
+    def get_trade(self, trade_id: str):
+        """Return the trade object (open or closed) or None if unknown."""
+        try:
+            return _req(f"/accounts/{self.acct}/trades/{trade_id}")
+        except Exception:
+            return None
+
+    def reduce_position(self, trade_id: str, units_to_close: float) -> dict:
+        """Partially close a trade. units_to_close = magnitude (positive)."""
+        t = self.get_trade(trade_id)
+        if not t or t.get("state") != "OPEN":
+            return {"done": False, "reason": "trade not open"}
+        pos = float(t.get("currentUnits", 0))
+        if pos == 0:
+            return {"done": False, "reason": "no position"}
+        close_u = -abs(units_to_close) if pos > 0 else abs(units_to_close)
+        if abs(close_u) >= abs(pos):      # don't over-close
+            close_u = -pos
+        us = fmt_units(t["instrument"], close_u)
+        order = {"order": {"type": "MARKET", "instrument": t["instrument"], "units": us}}
+        try:
+            r = _req(f"/accounts/{self.acct}/orders", method="POST", body=order)
+            ok = bool(r.get("orderFillTransaction"))
+            return {"done": ok, "closed_units": us,
+                    "reason": "" if ok else (r.get("orderCancelTransaction", {}).get("reason", "no fill"))}
+        except Exception as e:
+            return {"done": False, "reason": str(e)}
+
+    def set_stop_loss(self, trade_id: str, new_price: float) -> dict:
+        """Move a trade's stop loss by replacing its dependent SL order.
+        Only call with a FAVORABLE, valid level (caller validates)."""
+        t = self.get_trade(trade_id)
+        if not t or t.get("state") != "OPEN":
+            return {"done": False, "reason": "trade not open"}
+        inst = t["instrument"]
+        pp = price_precision(inst)
+        try:
+            _req(f"/accounts/{self.acct}/trades/{trade_id}/orders", method="PUT",
+                 body={"stopLoss": {"price": f"{new_price:.{pp}f}", "timeInForce": "GTC"}})
+            return {"done": True, "sl": new_price}
+        except Exception as e:
+            return {"done": False, "reason": str(e)}
+
+    def open_managed(self, sig: Signal, tp_final_mult: float = 2.0) -> dict:
+        """Open a trade managed by trade_manager: SL at sig.stop, backstop TP far out,
+        and (for partials) tp1 = sig.target. Returns trade_id + the management plan."""
+        if sig.action != "SETUP" or sig.entry is None:
+            return {"opened": False, "reason": "not a setup"}
+        inst = resolve_instrument(sig.symbol)
+        is_buy = sig.direction == Direction.BULL
+        bal = self._balance()
+        risk_amount = bal * self.risk
+        sl_dist = abs(sig.entry - sig.stop)
+        if sl_dist <= 0:
+            return {"opened": False, "reason": "invalid SL distance"}
+        units = max(risk_amount / sl_dist, 0.01)
+        units = units if is_buy else -units
+        d = 1 if is_buy else -1
+        tp1 = sig.target                                  # partial target (method TP)
+        tp_final = sig.entry + d * abs(sig.target - sig.entry) * tp_final_mult  # backstop
+        pp = price_precision(inst)
+        order = {"order": {
+            "type": "MARKET", "instrument": inst,
+            "units": fmt_units(inst, units),
+            "stopLossOnFill": {"price": f"{sig.stop:.{pp}f}", "timeInForce": "GTC"},
+            "takeProfitOnFill": {"price": f"{tp_final:.{pp}f}", "timeInForce": "GTC"},
+        }}
+        try:
+            r = _req(f"/accounts/{self.acct}/orders", method="POST", body=order)
+            fill = r.get("orderFillTransaction", {})
+            tid = (fill.get("tradeOpened") or {}).get("tradeID")
+            if not tid:
+                reason = (r.get("orderCancelTransaction") or {}).get("reason") \
+                         or (r.get("orderRejectTransaction") or {}).get("rejectReason") or "no fill"
+                return {"opened": False, "reason": str(reason)}
+            return {"opened": True, "trade_id": tid, "instrument": inst,
+                    "units": fmt_units(inst, units), "side": "buy" if is_buy else "sell",
+                    "entry": float(fill.get("price", sig.entry)),
+                    "stop": sig.stop, "tp1": tp1, "tp_final": tp_final,
+                    "initial_size": abs(units)}
+        except Exception as e:
+            return {"opened": False, "reason": str(e)}
 
     def execute(self, sig: Signal, dry_run: bool = False) -> dict:
         if sig.action != "SETUP" or sig.entry is None:
