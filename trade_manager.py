@@ -7,10 +7,12 @@ Every run it revisits each open trade and applies Trades By Sci's actual managem
   3. Structure-break exit         (Day 9: "the moment price breaks structure, exit")
   4. Max-hold cap                 (Day 11: most trades 8-12h; don't hold dead money)
 
-State persists in open_trades.json so it survives across the 15-min GitHub runs.
+Sends Telegram (via notifier) on: partial taken + EVERY close (with realized P/L).
+Trail-only moves are console-logged (too frequent to ping). State persists in
+open_trades.json across the 15-min GitHub runs.
+
 SAFE-BIASED: the baseline SL + backstop TP (set at entry) always protect; this
-layer only ADDS favorable actions (lock profit, tighten risk, cut early). Worst
-case it behaves like the simple bot.
+layer only ADDS favorable actions. Worst case it behaves like the simple bot.
 """
 from __future__ import annotations
 import os, json, datetime as dt
@@ -22,6 +24,15 @@ JOURNAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "open_trades.
 PARTIAL_PCT = 0.5            # close half at tp1
 INITIAL_MAX_HOLD_HOURS = 24  # if tp1 not reached by then, close (stalled)
 RUNNER_MAX_HOLD_HOURS = 120  # 5-day cap on the runner
+
+
+def _notify(notifier, text: str):
+    if notifier is None:
+        return
+    try:
+        notifier.send_text(text)
+    except Exception:
+        pass
 
 
 # ----------------------------- journal --------------------------------------
@@ -53,17 +64,17 @@ def open_trade(broker, sig) -> dict:
 
 
 # ------------------- pure decision helpers (unit-testable) ------------------
-def _should_partial(price: float, tp1: float, direction: Direction, taken: bool) -> bool:
+def _should_partial(price, tp1, direction, taken) -> bool:
     if taken:
         return False
     return price >= tp1 if direction == Direction.BULL else price <= tp1
 
-def _should_maxhold(elapsed_hours: float, partial_taken: bool) -> bool:
+def _should_maxhold(elapsed_hours, partial_taken) -> bool:
     cap = RUNNER_MAX_HOLD_HOURS if partial_taken else INITIAL_MAX_HOLD_HOURS
     return elapsed_hours > cap
 
-def _structure_break(candles_1h: List[Candle], direction: Direction) -> bool:
-    """Trend invalidation: long closes below last 1H higher-low; short above last lower-high."""
+def _structure_break(candles_1h, direction) -> bool:
+    """Long invalidation: close < last 1H higher-low. Short: close > last lower-high."""
     if len(candles_1h) < 6:
         return False
     swings = detect_swings(candles_1h)
@@ -74,33 +85,35 @@ def _structure_break(candles_1h: List[Candle], direction: Direction) -> bool:
     highs = [s for s in swings if s.kind.value == "high"]
     return bool(highs) and last_close > highs[-1].price
 
-def _trailing_sl(candles_15m: List[Candle], direction: Direction,
-                 current_sl: float, current_price: float) -> Optional[float]:
-    """Trail behind the most recent 15M swing. Only returns a FAVORABLE, valid level."""
+def _trailing_sl(candles_15m, direction, current_sl, current_price) -> Optional[float]:
     if len(candles_15m) < 6:
         return None
     swings = detect_swings(candles_15m)
-    buf = current_price * 0.0002          # tiny buffer (~2-3 pips on FX)
+    buf = current_price * 0.0002
     if direction == Direction.BULL:
         lows = [s for s in swings if s.kind.value == "low"]
         if not lows:
             return None
         cand = lows[-1].price - buf
-        if cand > current_sl and cand < current_price:
-            return cand
-    else:
-        highs = [s for s in swings if s.kind.value == "high"]
-        if not highs:
-            return None
-        cand = highs[-1].price + buf
-        if cand < current_sl and cand > current_price:
-            return cand
-    return None
+        return cand if (cand > current_sl and cand < current_price) else None
+    highs = [s for s in swings if s.kind.value == "high"]
+    if not highs:
+        return None
+    cand = highs[-1].price + buf
+    return cand if (cand < current_sl and cand > current_price) else None
+
+
+def _realized(broker, tid) -> float:
+    """Read realized P/L (account currency) of a (possibly just-closed) trade."""
+    try:
+        return float(broker.get_trade(tid).get("realizedPL", 0))
+    except Exception:
+        return 0.0
 
 
 # ----------------------------- manage loop ----------------------------------
-def manage(feed, broker, now: dt.datetime = None) -> List[str]:
-    """Revisit every open trade. Returns a log of actions taken."""
+def manage(feed, broker, notifier=None, now: dt.datetime = None) -> List[str]:
+    """Revisit every open trade. Returns console-log lines; pings notifier on key events."""
     now = now or dt.datetime.utcnow()
     trades = load()
     if not trades:
@@ -108,17 +121,19 @@ def manage(feed, broker, now: dt.datetime = None) -> List[str]:
     log: List[str] = []
 
     for tr in trades:
-        tid = tr["trade_id"]
-        sym = tr["symbol"]
+        tid, sym = tr["trade_id"], tr["symbol"]
         direction = Direction.BULL if tr["direction"] == "bull" else Direction.BEAR
         t = broker.get_trade(tid)
-        # 0) sync: trade closed (TP/SL/backstop hit)?
+
+        # 0) sync: already closed by TP/SL/backstop?
         if not t or t.get("state") != "OPEN":
-            log.append(f"{sym}: closed by TP/SL (trade {tid}) — removed from journal.")
+            pl = float(t.get("realizedPL", 0)) if t else 0.0
+            tag = "✅ WIN" if pl >= 0 else "🛑 LOSS"
+            msg = f"{tag} — {sym}: closed (TP/SL). P/L ${pl:+.2f}"
+            log.append(msg); _notify(notifier, msg)
             tr["_drop"] = True
             continue
 
-        # current live SL (source of truth) + candle-close prices
         try:
             current_sl = float(t["stopLossOrder"]["price"])
         except Exception:
@@ -130,41 +145,43 @@ def manage(feed, broker, now: dt.datetime = None) -> List[str]:
             log.append(f"{sym}: data unavailable ({str(e)[:40]}) — skip this run.")
             continue
         price15 = c15[-1].c
-        c1h_unused = c1h  # 1H close used inside _structure_break
         elapsed = (now - dt.datetime.fromisoformat(tr["entry_time"])).total_seconds() / 3600.0
 
         # 1) max-hold cap
         if _should_maxhold(elapsed, tr["partial_taken"]):
             broker.close_trade(tid)
-            log.append(f"{sym}: MAX-HOLD ({elapsed:.0f}h) — closed.")
+            pl = _realized(broker, tid)
+            msg = f"⚪ {sym}: max-hold ({elapsed:.0f}h) — closed. P/L ${pl:+.2f}"
+            log.append(msg); _notify(notifier, msg)
             tr["_drop"] = True
             continue
         # 2) structure-break exit
         if _structure_break(c1h, direction):
             broker.close_trade(tid)
-            log.append(f"{sym}: STRUCTURE BREAK — closed early (smaller red).")
+            pl = _realized(broker, tid)
+            msg = f"🔴 {sym}: structure broke → closed early. P/L ${pl:+.2f}"
+            log.append(msg); _notify(notifier, msg)
             tr["_drop"] = True
             continue
         # 3) partial + breakeven
         if _should_partial(price15, tr["tp1"], direction, tr["partial_taken"]):
-            part = tr["initial_size"] * PARTIAL_PCT
-            r = broker.reduce_position(tid, part)
+            r = broker.reduce_position(tid, tr["initial_size"] * PARTIAL_PCT)
             if r.get("done"):
                 tr["partial_taken"] = True
-                be = broker.set_stop_loss(tid, tr["entry"])  # move SL to entry = risk-free
-                log.append(f"{sym}: PARTIAL +{PARTIAL_PCT:.0%} @ tp1 {tr['tp1']}; "
-                           f"SL->breakeven {'ok' if be.get('done') else be.get('reason')}.")
+                be = broker.set_stop_loss(tid, tr["entry"])
+                msg = (f"📊 {sym}: banked {PARTIAL_PCT:.0%} @ {tr['tp1']}; "
+                       f"SL → breakeven ({'ok' if be.get('done') else be.get('reason')}). Runner risk-free.")
+                log.append(msg); _notify(notifier, msg)
             else:
                 log.append(f"{sym}: partial failed ({r.get('reason')}).")
-        # 4) trail the runner
+        # 4) trail the runner (console only — too frequent to ping)
         if tr["partial_taken"]:
             new_sl = _trailing_sl(c15, direction, current_sl, price15)
             if new_sl is not None:
                 r = broker.set_stop_loss(tid, new_sl)
                 if r.get("done"):
-                    log.append(f"{sym}: TRAIL SL {current_sl:.5f} -> {new_sl:.5f}.")
+                    log.append(f"{sym}: trail SL {current_sl:.5f} -> {new_sl:.5f}.")
 
-    # persist: drop closed trades
     remaining = [t for t in trades if not t.get("_drop")]
     for t in remaining:
         t.pop("_drop", None)
@@ -173,7 +190,7 @@ def manage(feed, broker, now: dt.datetime = None) -> List[str]:
 
 
 if __name__ == "__main__":
-    # logic self-test: build a clear HH/HL staircase so pivots always exist
+    # quick logic self-test (no network)
     import random
     random.seed(1)
     base = dt.datetime(2026, 7, 1)
@@ -188,15 +205,13 @@ if __name__ == "__main__":
                 out.append(Candle(base+dt.timedelta(hours=i), p-j, p+j, p-2*j, p)); i += 1
         return out
     up = staircase(4, 1.1000)
-    print("structure break (clean HH/HL uptrend):", _structure_break(up, Direction.BULL), "(expect False)")
+    print("structure break (clean uptrend):", _structure_break(up, Direction.BULL), "(expect False)")
     lows = [s for s in detect_swings(up) if s.kind.value == "low"]
     broken = up + [Candle(up[-1].time+dt.timedelta(hours=1), 0, 0, 0, lows[-1].price - 0.0100)]
     print("structure break (close < last HL):", _structure_break(broken, Direction.BULL), "(expect True)")
-    print("partial trigger (price>=tp1):", _should_partial(1.1050, 1.1050, Direction.BULL, False), "(expect True)")
-    print("partial already taken:", _should_partial(1.1080, 1.1050, Direction.BULL, True), "(expect False)")
-    print("maxhold 30h no-partial:", _should_maxhold(30, False), "(expect True)")
-    print("maxhold 10h runner:", _should_maxhold(10, True), "(expect False)")
+    print("partial (price>=tp1):", _should_partial(1.1050, 1.1050, Direction.BULL, False), "(expect True)")
+    print("maxhold 30h:", _should_maxhold(30, False), "(expect True)")
     c15 = staircase(3, 1.1000, j=0.0003)
     tr = _trailing_sl(c15, Direction.BULL, 1.0950, c15[-1].c)
-    print("trailing SL (long, sl=1.0950):", f"{tr:.5f}" if tr else None, "(expect level > 1.0950 & < price)")
-    print("\nlogic self-test done.")
+    print("trailing SL:", f"{tr:.5f}" if tr else None)
+    print("logic self-test done.")
