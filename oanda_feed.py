@@ -129,9 +129,10 @@ class OANDAPaperBroker:
 
     # ---------- trade management methods (partials / trailing / SL moves) ----------
     def get_trade(self, trade_id: str):
-        """Return the trade object (open or closed) or None if unknown."""
+        """Return the trade object (open or closed) or None if unknown.
+        OANDA wraps the response as {"trade": {...}, "lastTransactionID": ...}."""
         try:
-            return _req(f"/accounts/{self.acct}/trades/{trade_id}")
+            return _req(f"/accounts/{self.acct}/trades/{trade_id}")["trade"]
         except Exception:
             return None
 
