@@ -58,6 +58,22 @@ class CCXTDataFeed:
         raise RuntimeError(f"No exchange could serve {pair} {timeframe}: {last_err}")
 
 
+class MultiFeed:
+    """Routes symbols to the right backend: forex -> OANDA, BTC/gold -> CCXT.
+    Lets the bot watch forex (tradeable on demo) AND BTC/gold (alert-only) together."""
+    CRYPTO_SYMBOLS = {"BTCUSD", "BTC", "XAUUSD"}  # served by CCXT (BTC/USDT, PAXG/USDT)
+
+    def __init__(self, primary, verbose=False):
+        self.primary = primary                       # e.g., OANDADataFeed (forex)
+        self.crypto = CCXTDataFeed(verbose=verbose)  # BTC + gold proxy
+        self.verbose = verbose
+
+    def candles(self, symbol, timeframe, limit=120):
+        if symbol.upper() in self.CRYPTO_SYMBOLS:
+            return self.crypto.candles(symbol, timeframe, limit)
+        return self.primary.candles(symbol, timeframe, limit)
+
+
 if __name__ == "__main__":
     # quick live smoke test
     f = CCXTDataFeed(verbose=True)
