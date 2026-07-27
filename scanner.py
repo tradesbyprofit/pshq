@@ -20,9 +20,29 @@ import trade_manager
 # OANDA demo offers 68 forex pairs (no metals/crypto yet).
 # Watchlist = liquid majors + the most popular volatile cross (great ICC structure).
 WATCH = ["EURUSD", "GBPUSD", "USDJPY", "GBPJPY", "BTCUSD", "XAUUSD"]
-ALERT_ONLY = {"BTCUSD", "XAUUSD"}   # monitored + alerted, NOT auto-traded (OANDA demo lacks them)
+ALERT_ONLY = {"BTCUSD", "XAUUSD"}     # monitored + alerted, not auto-traded (OANDA demo can't trade them)
 HTF = "1H"; LTF = "15M"               # markup TF / entry TF (4H/5M as alternates)
 STATE_FILE = "scanner_state.json"
+
+try:
+    import kalshi_feed                 # optional Kalshi crowd-confluence overlay (BTC/gold)
+except Exception:
+    kalshi_feed = None
+
+
+def _kalshi_line(sym: str, price: float) -> str:
+    """One-line Kalshi crowd lean for an alert message (or honest 'no signal')."""
+    if kalshi_feed is None:
+        return "Kalshi: (module unavailable)"
+    try:
+        c = kalshi_feed.confluence(sym, price)
+        if c.get("median") is None or c.get("lean") == "n/a":
+            return f"Kalshi: no clean signal ({c.get('note')})"
+        return (f"Kalshi crowd lean: {c['lean'].upper()} "
+                f"(median {c['median']:.2f} vs spot {price:.2f}, "
+                f"{c.get('median_vs_spot_pct','?')}% by {str(c.get('resolves',''))[:10]})")
+    except Exception as e:
+        return f"Kalshi: (unavailable: {str(e)[:30]})"
 
 # ---- 1. trade governor: 1/week default, 2 max --------------------------------
 @dataclass
@@ -120,10 +140,12 @@ def scan_once(feed: DataFeed, notifier: Notifier, gov: Governor, broker=None):
             continue
         sig = evaluate(sym, htf, ltf, when=htf[-1].time if htf else dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
         if sig.action == "SETUP":
-            if sym in ALERT_ONLY:
-                # monitor + alert only (OANDA demo can't trade BTC/gold) — no execution, no cap
-                notifier.send(sig)
-                print(f"  [alert-only] {sym}: ICC setup — alert sent, not auto-traded.")
+            if sym in ALERT_ONLY:                # BTC/gold: alert + Kalshi confluence, no execution
+                notifier.send_text(
+                    f"🟡 ALERT-ONLY SETUP — {sym} {sig.direction.value.upper()}\n"
+                    f"entry {sig.entry} | stop {sig.stop} | TP {sig.target} | R:R {sig.rr:.2f}\n"
+                    f"{_kalshi_line(sym, htf[-1].c)}\n"
+                    f"(monitored via free feed; trade manually. Kalshi = crowd confluence, informational.)")
             elif not gov.can_trade(taken):
                 notifier.send(Signal("NO_TRADE", sym, sig.direction,
                     f"setup found but weekly cap reached ({taken}/{gov.max_per_week}) — DO NOT CHASE",
@@ -164,9 +186,8 @@ if __name__ == "__main__":
     try:
         if args.oanda:
             from oanda_feed import OANDADataFeed
-            from feeds import MultiFeed
-            feed = MultiFeed(OANDADataFeed(), verbose=False)
-            src = "OANDA (forex) + CCXT (BTC/gold)"
+            feed = OANDADataFeed(verbose=True)
+            src = "OANDA practice (real spot)"
         elif args.demo:
             feed = DemoFeed(); src = "DEMO (synthetic)"
         else:
