@@ -42,6 +42,10 @@ class TelegramNotifier:
         )
         self._post(text)
 
+    def send_text(self, text: str):
+        """Send an arbitrary plain message (used for trade lifecycle: partials, closes)."""
+        self._post(text)
+
     def _post(self, text: str):
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         data = urllib.parse.urlencode({
