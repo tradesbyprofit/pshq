@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 watch.html
 *.log
+scanner_state.json.tmp
 # The trade journal is YOUR record of hand-placed gold trades. It grows without
 # bound and is personal execution data, not project state, so it stays local.
 # Set ICC_JOURNAL=/some/path to keep it elsewhere (e.g. a synced drive).

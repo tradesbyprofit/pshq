@@ -70,7 +70,7 @@ the figure only drives the lot size printed in your alerts.
 | **icc_engine.py** | The ICC detector → `SETUP`/`NO_TRADE` + entry/stop/target/R:R + checklist. Now includes `no_trade_zone()`. Self-tested. |
 | **oanda_feed.py** | ⭐ OANDA practice feed (real spot gold + BTC) + optional paper broker. |
 | **feeds.py** | Backup data via CCXT (OKX/Kucoin) — no key, crypto-only. |
-| **scanner.py** | Live monitor. Weekly cap (1 target/2 max) + "don't chase" guard. State persists. |
+| **scanner.py** | Gold-only 4H/1H monitor. Sends each unchanged setup once; manual entries only. |
 | **notifier_telegram.py** | Telegram alerts on A+ setups only. |
 | **icc_tv.pine** | Optional TradingView indicator (visual; labels swings + indications). |
 | **journal.py** | ⭐ **Your hand-placed gold trades** — what the bot said vs. what you did → **expectancy in R**. Gold is alert-only, so this is the only real record that exists. |
@@ -79,6 +79,7 @@ the figure only drives the lot size printed in your alerts.
 | **test_sizing.py** | 69 offline checks: position sizing, lot rules, quote-currency conversion, manual-entry hints. Run in CI. |
 | **test_no_trade_zone.py** | 34 offline checks for the zone gate + the tied-extreme swing bug. Run in CI. |
 | **test_journal.py** | Offline checks for the journal's R arithmetic + slippage sign convention. Run in CI. |
+| **test_alert_delivery.py** | 21 offline tests: Telegram delivery, duplicate calls, retry ids, imports, manual-only deployment. |
 | transcripts/ | Per-video extraction notes (Day 1 + the 2026-07 update). |
 
 ## Run it
@@ -111,7 +112,37 @@ python3 compound_reality.py --from-journal # ...using YOUR measured edge, not an
 python3 test_sizing.py               # offline sizing/lot-rule regression tests
 python3 test_journal.py              # offline journal arithmetic tests
 ```
-In production, schedule `scanner.py --oanda --telegram` every 15 min (cron/systemd) so it runs unattended.
+## Automatic gold checks → Telegram calls
+
+`.github/workflows/scan.yml` runs on GitHub's servers from **main**. A schedule
+means **automatic chart checks**, not prearranged trade calls:
+
+- **Every 15 minutes, Monday–Friday, 07:00–21:00 UTC**, the engine's London/NY
+  monitoring window. In Arlington that is **2am–4pm CDT** (1am–3pm CST after the
+  clock change). GitHub schedules are best-effort and can start late.
+- The bot reads **completed 4H/1H spot-gold candles**. If a qualifying ICC setup
+  appears, it sends a Telegram call with direction, entry, stop, target and size.
+  If not, it stays quiet. An unchanged setup does **not** send again each check.
+- **No `--paper`, no broker orders, no automatic trade management.** Entries,
+  exits and risk decisions remain manual. Alert sizing uses **10%** of the
+  balance shown in the message (**$10,000 default**), not a claim about your
+  manually traded account balance. Use `--balance` for a different local value.
+- Token/chat access and real XAUUSD candle data are checked. Failures make the
+  workflow fail visibly rather than looking like a successful but silent scan.
+  There is no automatic switch to BTC, forex or a gold-token proxy.
+
+To activate: merge the tested gold version into main, enable **ICC Scan** in
+GitHub Actions, then manually run it with **send_test = true**. That sends a
+clearly labelled **connection test**, never a fake trade call. The repository
+Actions secrets needed are `OANDA_API_TOKEN` (practice), `TG_BOT_TOKEN` and
+`TG_CHAT_ID`. Start the bot in Telegram first. Store credentials in GitHub
+Secrets; never paste them into a chat or commit them.
+
+The scheduled job restores its dedupe state and alert journal from the private
+**gold-scan-state** artifact. It saves a new snapshot when alerts change, and
+refreshes it weekly so a quiet market does not expire it. Snapshots are retained
+for 90 days; back them up locally before a prolonged shutdown. No alert data or
+bot-created state commits are pushed to main.
 
 ## The method in one breath (2026-07-30 version)
 **ICC = Indication → Correction → Continuation.** No indicators. **Two timeframes only.**
@@ -168,6 +199,21 @@ that are easy to conflate:
 Recording **skips** matters as much as fills. If the setups you passed on would
 have won, your discretion is costing you; if they would have lost, your
 discretion *is* the edge. There is no way to tell which without writing them down.
+
+For calls sent by GitHub Actions, open the **Journal backup** link in the
+Telegram call and download the **gold-scan-state** artifact. Import its
+recommendations **before** recording fills/exits locally:
+
+```bash
+# Replace RUN_ID with the number in the call's GitHub run link.
+snapshot=$(mktemp -d)
+gh run download RUN_ID --name gold-scan-state --dir "$snapshot"
+python3 journal.py import-alerts "$snapshot/journal.jsonl"
+```
+
+Importing twice is safe; it never overwrites your existing fills, exits or skips.
+A conflicting id is rejected rather than corrupting your record. Actual human
+fills/exits stay local, not in the scanner's cloud snapshot.
 
 `journal.jsonl` is gitignored — it is your personal execution data. Point
 `ICC_JOURNAL` at a synced path to back it up. Under 10 closed trades

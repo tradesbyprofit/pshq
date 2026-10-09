@@ -95,7 +95,11 @@ def index(events: Optional[List[dict]] = None, path: Optional[str] = None) -> Di
 
 
 def next_id(events: Optional[List[dict]] = None, path: Optional[str] = None) -> str:
-    n = sum(1 for e in (load(path) if events is None else events) if e.get("ev") == "alert")
+    # A downloaded cloud snapshot or a filtered local record can have gaps.
+    # Counting rows would reuse an existing alert id; use the highest id instead.
+    ids = [str(e.get("id", "")) for e in (load(path) if events is None else events)
+           if e.get("ev") == "alert"]
+    n = max((int(a[1:]) for a in ids if a.startswith("A") and a[1:].isdigit()), default=0)
     return f"A{n + 1:04d}"
 
 
@@ -112,8 +116,13 @@ def _quote_to_usd(instrument: str) -> float:
 # --- writes ------------------------------------------------------------------
 def log_alert(sig, risk_pct: float, balance: float,
               units: Optional[float] = None, risk_usd: Optional[float] = None,
-              too_small: Optional[str] = None, path: Optional[str] = None) -> str:
-    """Record a setup the bot fired. Called automatically by scanner.py."""
+              too_small: Optional[str] = None, path: Optional[str] = None,
+              alert_key: Optional[str] = None) -> str:
+    """Record a setup; a failed delivery retry reuses the same journal id."""
+    if alert_key:
+        for event in load(path):
+            if event.get("ev") == "alert" and event.get("alert_key") == alert_key:
+                return event["id"]
     aid = next_id(path=path)
     append({
         "ev": "alert", "id": aid, "symbol": sig.symbol,
@@ -123,6 +132,7 @@ def log_alert(sig, risk_pct: float, balance: float,
         "risk_pct": risk_pct, "balance": balance,
         "units_suggested": units, "risk_usd_suggested": risk_usd,
         "too_small": too_small, "method": METHOD_TAG,
+        "alert_key": alert_key,
     }, path)
     return aid
 
@@ -166,6 +176,34 @@ def log_skip(aid: str, reason: str = "", path: Optional[str] = None) -> dict:
     if "fill" in rec:
         raise ValueError(f"{aid} was filled, not skipped")
     return append({"ev": "skip", "id": aid, "reason": reason}, path)
+
+
+def import_alerts(source: str, path: Optional[str] = None) -> int:
+    """Merge a downloaded cloud alert journal without overwriting human trades.
+
+    Validate id collisions before writing anything. Only recommendation events
+    are imported; local fill/exit/skip events remain entirely under your control.
+    """
+    if not os.path.isfile(source):
+        raise ValueError(f"alert journal does not exist: {source}")
+    existing = {aid: rec["alert"] for aid, rec in index(path=path).items()
+                if "alert" in rec}
+    staged = []
+    fields = ("symbol", "direction", "entry", "stop", "target")
+    for event in load(source):
+        if event.get("ev") != "alert" or not event.get("id"):
+            continue
+        aid = event["id"]
+        if aid in existing:
+            if any(existing[aid].get(k) != event.get(k) for k in fields):
+                raise ValueError(f"{aid} already refers to a different alert; "
+                                 "import into a separate journal instead")
+            continue
+        existing[aid] = event
+        staged.append(event)
+    for event in staged:
+        append(event, path)
+    return len(staged)
 
 
 # --- reads -------------------------------------------------------------------
@@ -421,6 +459,8 @@ def main(argv=None) -> int:
     sub.add_parser("open", help="positions with a fill but no exit")
     sub.add_parser("report", help="expectancy in R + execution discipline")
     sub.add_parser("closed", help="dump every closed trade as JSON lines")
+    imp = sub.add_parser("import-alerts", help="merge downloaded cloud recommendations; preserve local fills/exits")
+    imp.add_argument("file", help="path to the downloaded journal.jsonl")
 
     for name in ("fill", "exit", "skip"):
         p = sub.add_parser(name)
@@ -453,6 +493,9 @@ def main(argv=None) -> int:
         elif a.cmd == "closed":
             for t in closed_trades():
                 print(json.dumps(t, default=str))
+        elif a.cmd == "import-alerts":
+            count = import_alerts(a.file)
+            print(f"✅ imported {count} new alerts. Existing fills, exits and skips were kept.")
         elif a.cmd in ("fill", "exit", "skip"):
             token = "last" if getattr(a, "last", False) else (a.id or "last")
             # `exit` closes an OPEN position; `fill`/`skip` answer a PENDING alert

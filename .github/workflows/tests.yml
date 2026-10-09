@@ -1,6 +1,6 @@
 # Offline regression tests. No secrets, no network, no API keys — these run on
-# every push so position-sizing mistakes get caught before scan.yml auto-executes
-# a paper trade with them.
+# every push so sizing/delivery mistakes get caught before the gold-only
+# scanner sends a manual-entry call.
 name: Tests
 
 on:
@@ -40,6 +40,9 @@ jobs:
       # compound_reality.py --from-journal and must not silently drift.
       - name: Trade journal (alert-vs-actual record, expectancy in R)
         run: python3 test_journal.py
+
+      - name: Gold alert delivery and deployment safety
+        run: python3 test_alert_delivery.py
 
       - name: trade_stats reads the journal with no OANDA keys
         run: python3 trade_stats.py --source journal
