@@ -3,6 +3,30 @@
 Source: https://www.youtube.com/playlist?list=PLmaCbAD6I1AyI7jO4SiM38hgc2pWgFOG_
 Author: Trades By Sci (@tradesbysci) | Compiled: 2026-07-24
 
+> ## ⚠️ SUPERSEDED ON TIMEFRAMES — 2026-07-30
+> This synthesis was compiled **2026-07-24**. Six days later Sci published
+> **"MY ICC UPDATE"** (https://www.youtube.com/watch?v=p7NKipnkvnU), which
+> changes the operating timeframes throughout:
+>
+> | | This document | **Current (2026-07-30)** |
+> |---|---|---|
+> | Markup | 1H (4H when choppy) | **4H, always** |
+> | Correction / entry | **15M** | **1H** |
+> | 15-minute | core of the method | **abandoned entirely** |
+> | Timeframes in use | 3 | **2** |
+> | No-trade zone | "range = no trade" | **explicit: last extreme + the opposite swing that created it** |
+> | Stop | past the 15M correction extreme | **past 4H structure — deliberately wide; cut lot size, not stop width** |
+> | Invalidation | structure break | **4H structure break ONLY** |
+>
+> The ICC concept itself — Indication → Correction → Continuation, liquidity
+> grabs, "don't chase", patience, partials + runner — **is unchanged** and this
+> document is still the right place to learn it. Kept intact deliberately as the
+> record of the original course.
+>
+> **Read `transcripts/ICC_Update_2026-07-30.md` for the current rules** (verbatim
+> quotes + full diff) and **`CAVEATS.md` for sourced evidence on the performance
+> claims.** This repo now trades **XAUUSD only, 4H markup / 1H entry.**
+
 > **One-line summary:** ICT-derived, **pure price-action** (zero indicators). Find a trending market on the **higher timeframes**, wait for an **Indication** (a swing breaks), wait for the **Correction** (the liquidity-grab pullback), then enter on the **Continuation** (price resumes through the level a *second* time). Don't chase. Don't predict. Trade reactions only. If there's no setup, **don't trade**.
 
 ---

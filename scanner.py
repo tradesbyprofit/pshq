@@ -1,7 +1,7 @@
 """
-scanner.py — Live ICC monitor. Watches XAUUSD & BTCUSD, runs the engine on a
-schedule, and ONLY surfaces a trade when a full ICC setup forms. Enforces the
-"1 trade/week (max 2), never chase" rule. Logs everything.
+scanner.py — gold-only ICC monitor (4H markup / 1H entry).
+Checks on a schedule, sends qualifying setups once, and never executes gold.
+Manual alerts are deduplicated; the Governor caps optional broker executions.
 
 This is the "connect to charts & monitor" layer. The actual data feed and the
 order/notify routing are PLUGGABLE — see DataFeed and Notifier below.
@@ -11,17 +11,55 @@ RUN:   python3 scanner.py            (demo mode uses synthetic data so you can
 NOT ADVICE. Demo/simulation only until you wire a real feed + paper-trade it.
 """
 from __future__ import annotations
-import datetime as dt, json, time, os
+import datetime as dt, hashlib, json, time, os
 from dataclasses import dataclass, asdict
 from typing import List, Protocol
 from icc_engine import Candle, evaluate, Signal, Direction
 import trade_manager
 
-# OANDA demo offers 68 forex pairs (no metals/crypto yet).
-# Watchlist = liquid majors + the most popular volatile cross (great ICC structure).
-WATCH = ["EURUSD", "GBPUSD", "USDJPY", "GBPJPY", "BTCUSD", "XAUUSD"]
-ALERT_ONLY = {"BTCUSD", "XAUUSD"}     # monitored + alerted, not auto-traded (OANDA demo can't trade them)
-HTF = "1H"; LTF = "15M"               # markup TF / entry TF (4H/5M as alternates)
+try:
+    import journal                    # alert-vs-actual trade journal
+except Exception:
+    journal = None
+
+# ---------------------------------------------------------------------------
+# GOLD ONLY. Operator decision 2026-10-08: follow Sci's method, but trade it on
+# XAUUSD exclusively even when he shows NASDAQ / BTC / forex examples. Gold is
+# the one market he trades most and the one with the cleanest 4H structure.
+# To re-add a market: append it here and make sure feeds.py/oanda_feed.py can
+# resolve it. Nothing else needs to change.
+# ---------------------------------------------------------------------------
+WATCH = ["XAUUSD"]
+
+# Operator choice: gold stays MANUAL, whether or not the broker offers metals.
+# The production workflow never passes --paper or manages broker positions.
+# Gold data access is checked separately; unavailable spot data fails the run
+# instead of silently switching to crypto/forex or pretending to send calls.
+ALERT_ONLY = {"XAUUSD"}
+
+# MY ICC UPDATE (Trades By Sci, 2026-07-30): markup on 4H, entries on 1H.
+# The 15-minute is abandoned entirely — "sometimes the volume is a little bit
+# excessive throughout New York session, breaks structure a lot on the
+# 15-minute time frame. So a lot of the noise is cleared out by trading on the
+# 4 hour and 1 hour time frame." Two timeframes only: "You only need two time
+# frames... Don't over complicate it at all."
+HTF = "4H"; LTF = "1H"
+
+# ---------------------------------------------------------------------------
+# RISK PER TRADE — Sci's stated default, chosen deliberately by the operator
+# 2026-10-08 ("trust him"). His 2026-07-30 update pairs this with WIDE 4H
+# structural stops and the rule "if you can't put whatever stop-loss you want,
+# lower your lot size" — i.e. the stop goes where structure says and the lot
+# absorbs the risk. size_position() implements exactly that.
+#
+# Override at runtime with  --risk <percent>  (e.g. --risk 1).
+# NOTE: XAUUSD is in ALERT_ONLY, so with a gold-only watchlist nothing is
+# auto-executed at this setting — alerts carry the computed size for manual
+# entry instead. This number only goes live if execution is enabled.
+# ---------------------------------------------------------------------------
+RISK_PER_TRADE = 0.10
+DEFAULT_BALANCE = 10_000.0     # used for sizing hints when no live balance is reachable
+
 STATE_FILE = "scanner_state.json"
 
 try:
@@ -62,6 +100,84 @@ class Governor:
         # "sometimes we don't trade all week" — once we've hit target, only take
         # A+ setups; here we simply stop at target unless you raise the cap.
         return taken_this_week < self.target_per_week
+
+
+def _journal_alert(sig, balance: float, risk: float, key: str = None) -> str:
+    """Record a fired setup in journal.py so a hand-placed trade can later be
+    matched against what the bot actually said. Never raises — a journaling
+    failure must not cost you the alert."""
+    if journal is None:
+        return "(journal unavailable)"
+    try:
+        sz = position_size(sig, balance, risk) or {}
+        aid = journal.log_alert(
+            sig, risk_pct=risk * 100.0, balance=balance,
+            units=(abs(sz["units"]) if not sz.get("too_small") and sz.get("units") else None),
+            risk_usd=sz.get("risk_usd"), too_small=sz.get("reason"), alert_key=key)
+        return aid
+    except Exception as e:
+        return f"(journal error: {str(e)[:40]})"
+
+
+# ---- 1b. position sizing for MANUAL entry (alert-only gold) ------------------
+def position_size(sig, balance: float, risk_fraction: float):
+    """The sizing dict for a signal, or None if it cannot be computed.
+
+    Split out from position_size_hint() so scanner.py can both format the alert
+    AND write the numbers into the journal.
+    """
+    if sig.action != "SETUP" or sig.entry is None or sig.stop is None:
+        return None
+    try:
+        from oanda_feed import resolve_instrument, size_position
+    except Exception:
+        return None
+    try:
+        return size_position(resolve_instrument(sig.symbol), balance,
+                             risk_fraction, sig.entry, sig.stop)
+    except Exception:
+        return None
+
+
+def position_size_hint(sig, balance: float, risk_fraction: float) -> str:
+    """One line telling you exactly what to enter by hand.
+
+    Gold is alert-only, so the bot does not place the order — which means the
+    alert has to carry the lot size or it is not actionable. Uses the same
+    size_position() the paper broker uses, so the number you type in matches
+    what the bot would have sent. Returns '' if it cannot be computed.
+    """
+    if sig.action != "SETUP" or sig.entry is None or sig.stop is None:
+        return ""
+    try:
+        from oanda_feed import resolve_instrument
+    except Exception as e:
+        return f"(sizing unavailable: {str(e)[:40]})"
+    s = position_size(sig, balance, risk_fraction)
+    if s is None:
+        return "(sizing unavailable)"
+    if s.get("too_small"):
+        return (f"⚠️ CANNOT SIZE: {s.get('reason')} — widen the balance or the "
+                f"risk %, or skip this setup")
+    # size_position() returns an unsigned magnitude; direction comes from the
+    # signal, NOT from the sign of units (that sign is applied by the broker).
+    side = "BUY" if sig.direction == Direction.BULL else "SELL"
+    return (f"📐 {side} {abs(s['units']):.2f} units {resolve_instrument(sig.symbol)}  |  "
+            f"risks ${s['risk_usd']:,.2f} = {s['risk_pct']:.1f}% of "
+            f"${balance:,.2f}  |  stop width {abs(sig.entry - sig.stop):.2f}")
+
+
+def risk_ladder_notice(risk_fraction: float) -> str:
+    """Print what the chosen risk % actually does over a normal losing streak.
+
+    Not a recommendation — just the arithmetic, so the setting is an informed
+    one rather than a number in a config file.
+    """
+    r = risk_fraction
+    rows = "  ".join(f"{n} -> {(1 - r) ** n * 100:.0f}%" for n in (2, 4, 6, 8))
+    return (f"risk/trade = {r * 100:.1f}% (--risk to change). "
+            f"Account left after N straight losses: {rows}")
+
 
 
 # ---- 2. pluggable data feed --------------------------------------------------
@@ -109,16 +225,68 @@ class ConsoleNotifier:
 # ---- 4. persistence (so the weekly counter survives restarts) ---------------
 def load_state():
     if os.path.exists(STATE_FILE):
-        return json.load(open(STATE_FILE))
-    return {"taken": {}}   # week_key -> count
+        with open(STATE_FILE) as f:
+            state = json.load(f)
+    else:
+        state = {}
+    state.setdefault("taken", {})
+    state.setdefault("sent_alerts", {})
+    return state
+
 
 def save_state(st):
-    json.dump(st, open(STATE_FILE,"w"), indent=2)
+    # A half-written dedupe file must not cause a repeat call after a restart.
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(st, f, indent=2)
+    os.replace(tmp, STATE_FILE)
+
+
+def alert_key(sig: Signal) -> str:
+    """Same direction and levels = same setup, not a fresh call every 15 min.
+
+    Deliberately excludes scan/candle time: a setup can persist across several
+    completed 1H candles without being a new trade recommendation.
+    """
+    fields = [sig.symbol, sig.direction.value, HTF, LTF,
+              sig.entry, sig.stop, sig.target]
+    return hashlib.sha256(json.dumps(fields).encode()).hexdigest()
+
+
+class MultiNotifier:
+    """Fan out to console + Telegram, but propagate a failed delivery."""
+    def __init__(self, ns):
+        self.ns = ns
+
+    def _send(self, method, message):
+        errors = []
+        for notifier in self.ns:
+            try:
+                getattr(notifier, method)(message)
+            except Exception as e:
+                errors.append(f"{type(notifier).__name__}: {e}")
+        if errors:
+            raise RuntimeError("Notifier delivery failed: " + "; ".join(errors))
+
+    def send(self, sig):
+        self._send("send", sig)
+
+    def send_text(self, text):
+        self._send("send_text", text)
 
 
 # ---- 5. the scan -------------------------------------------------------------
-def scan_once(feed: DataFeed, notifier: Notifier, gov: Governor, broker=None):
+def scan_once(feed: DataFeed, notifier: Notifier, gov: Governor, broker=None,
+              risk: float = RISK_PER_TRADE, balance: float = None):
     state = load_state()
+    # a live balance beats the configured default for manual-entry sizing hints
+    if balance is None and broker is not None:
+        try:
+            balance = broker._balance()
+        except Exception:
+            balance = None
+    if balance is None:
+        balance = DEFAULT_BALANCE
     wk = gov._week_key(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
     taken = state["taken"].get(wk, 0)
     print(f"\n=== SCAN @ {dt.datetime.now(dt.timezone.utc).replace(tzinfo=None):%H:%M:%S} UTC | week {wk}: "
@@ -127,6 +295,7 @@ def scan_once(feed: DataFeed, notifier: Notifier, gov: Governor, broker=None):
     if broker is not None:
         for a in trade_manager.manage(feed, broker, notifier):
             print(f"  [manage] {a}")
+    data_errors = []
     for sym in WATCH:
         try:
             htf = feed.candles(sym, HTF, 120)
@@ -137,30 +306,60 @@ def scan_once(feed: DataFeed, notifier: Notifier, gov: Governor, broker=None):
                 print(f"  {sym}: OANDA under maintenance — will retry next run.")
             else:
                 print(f"  {sym}: data error {e}")
+            data_errors.append(sym)
             continue
-        sig = evaluate(sym, htf, ltf, when=htf[-1].time if htf else dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
+        # Session eligibility is about the time of this scan, not the OPEN time
+        # of the last completed 4H candle (which can be almost eight hours old).
+        now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+        sig = evaluate(sym, htf, ltf, when=now)
         if sig.action == "SETUP":
-            if sym in ALERT_ONLY:                # BTC/gold: alert + Kalshi confluence, no execution
+            key = alert_key(sig)
+            if state["sent_alerts"].get(sym) == key:
+                print(f"  {sym}: same setup already sent — no duplicate call.")
+                continue
+            if sym in ALERT_ONLY:                # gold: alert + size + Kalshi confluence, no execution
+                size_line = position_size_hint(sig, balance, risk)
+                aid = _journal_alert(sig, balance, risk, key)
+                print(f"  [journal] logged {aid} — record your fill with: "
+                      f"python3 journal.py fill {aid} --price <fill> --units <size>")
+                run_link = ""
+                if os.getenv("GITHUB_RUN_ID") and os.getenv("GITHUB_REPOSITORY"):
+                    run_link = (f"\nJournal backup: https://github.com/"
+                                f"{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
+                                f"{os.environ['GITHUB_RUN_ID']}")
                 notifier.send_text(
                     f"🟡 ALERT-ONLY SETUP — {sym} {sig.direction.value.upper()}\n"
                     f"entry {sig.entry} | stop {sig.stop} | TP {sig.target} | R:R {sig.rr:.2f}\n"
+                    f"{size_line}\n"
                     f"{_kalshi_line(sym, htf[-1].c)}\n"
-                    f"(monitored via free feed; trade manually. Kalshi = crowd confluence, informational.)")
+                    f"(gold is alert-only: place this manually. Size computed at "
+                    f"{risk * 100:.1f}% risk. Kalshi = crowd confluence, informational.)\n"
+                    f"journal id {aid} -> python3 journal.py fill {aid} --price <fill> "
+                    f"--units <size>{run_link}")
+                # Only mark it sent AFTER the notifier has succeeded. Telegram
+                # errors fail the run and the next scan retries the same id.
+                state["sent_alerts"][sym] = key
+                save_state(state)
             elif not gov.can_trade(taken):
                 notifier.send(Signal("NO_TRADE", sym, sig.direction,
                     f"setup found but weekly cap reached ({taken}/{gov.max_per_week}) — DO NOT CHASE",
                     when=sig.when, checks={"cap": f"{taken}/{gov.max_per_week}"}))
             else:
                 notifier.send(sig)
+                aid = _journal_alert(sig, balance, risk, key)
+                print(f"  [journal] logged {aid}")
                 if broker is not None:           # managed paper auto-execution
                     res = trade_manager.open_trade(broker, sig)
                     print(f"  [paper] {sym}: {res}")
                 taken += 1
                 state["taken"][wk] = taken
+                state["sent_alerts"][sym] = key
                 save_state(state)
         else:
             notifier.send(sig)
     print(f"    -> week {wk} now {taken}/{gov.max_per_week}")
+    if data_errors:
+        raise RuntimeError("Live data unavailable for " + ", ".join(data_errors))
 
 
 if __name__ == "__main__":
@@ -172,6 +371,11 @@ if __name__ == "__main__":
     ap.add_argument("--telegram", action="store_true", help="also send A+ setups to Telegram")
     ap.add_argument("--market-hours-only", action="store_true",
                     help="exit early if forex is closed (for scheduled/CI runs)")
+    ap.add_argument("--risk", type=float, default=RISK_PER_TRADE * 100.0,
+                    help="%% of balance risked per trade (default: Sci's stated 10%%)")
+    ap.add_argument("--balance", type=float, default=None,
+                    help="balance used for manual-entry sizing hints when no live "
+                         "account is reachable (default: %(default)s -> 10000)")
     args = ap.parse_args()
 
     # market-hours guard (skip weekend/rollover so CI runs don't waste time)
@@ -200,13 +404,25 @@ if __name__ == "__main__":
     notifiers = [ConsoleNotifier()]
     gov = Governor(target_per_week=1, max_per_week=2)
 
+    # --- risk configuration (single source of truth) ---
+    risk_frac = max(args.risk, 0.0) / 100.0
+    if risk_frac <= 0:
+        print("--risk must be greater than 0"); raise SystemExit(2)
+    if risk_frac > 1.0:
+        print(f"--risk {args.risk}% means more than the whole balance per trade; "
+              f"did you pass a fraction instead of a percent?"); raise SystemExit(2)
+    print(f"⚠️  {risk_ladder_notice(risk_frac)}")
+    if WATCH and set(WATCH) <= ALERT_ONLY:
+        print(f"   watchlist {WATCH} is all ALERT_ONLY -> nothing auto-executes at "
+              f"this setting; alerts carry the computed size for manual entry.")
+
     # --- optional paper broker ---
     broker = None
     if args.paper:
         try:
             from oanda_feed import OANDAPaperBroker
-            broker = OANDAPaperBroker(risk_fraction=0.01)
-            print("(paper auto-execution ON — OANDA demo, 1% risk/trade)")
+            broker = OANDAPaperBroker(risk_fraction=risk_frac)
+            print(f"(paper auto-execution ON — OANDA demo, {risk_frac * 100:.1f}% risk/trade)")
         except Exception as e:
             print(f"(paper broker not active: {e})")
 
@@ -217,24 +433,16 @@ if __name__ == "__main__":
             from notifier_telegram import TelegramNotifier
             notifiers.append(TelegramNotifier())
         except Exception as e:
-            print(f"(Telegram not active: {e})")
+            print(f"Telegram required but unavailable: {e}")
+            raise SystemExit(1)
 
-    class Multi:
-        def __init__(self, ns): self.ns = ns
-        def send(self, sig):
-            for n in self.ns:
-                try: n.send(sig)
-                except Exception as e: print(f"notifier error: {e}")
-        def send_text(self, text):
-            for n in self.ns:
-                try: n.send_text(text)
-                except Exception as e: print(f"notifier error: {e}")
-    notifier = Multi(notifiers)
+    notifier = MultiNotifier(notifiers)
 
     mode = src
     tg = " + Telegram" if use_tg else ""
     pap = " + PAPER AUTO-EXEC" if broker else ""
-    print(f"ICC scanner — {mode}{tg}{pap}. Alert-only default. Ctrl+C to stop.")
-    scan_once(feed, notifier, gov, broker=broker)
+    print(f"ICC scanner — {mode}{tg}{pap}. GOLD ONLY, {HTF} markup / {LTF} entry, "
+          f"{risk_frac * 100:.1f}% risk/trade. Alert-only default. Ctrl+C to stop.")
+    scan_once(feed, notifier, gov, broker=broker, risk=risk_frac, balance=args.balance)
     if args.oanda:
         print("\nLive OANDA scan complete. Schedule scan_once() every 15 min (cron/systemd).")

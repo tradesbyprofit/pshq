@@ -7,7 +7,8 @@ import os, datetime as dt
 from icc_engine import detect_swings, classify_trend, find_indication, Direction, in_session
 from oanda_feed import OANDADataFeed
 
-WATCH = ["EURUSD", "GBPUSD", "USDJPY", "GBPJPY"]
+WATCH = ["XAUUSD"]          # GOLD ONLY — see scanner.py
+HTF = "4H"                  # MY ICC UPDATE (2026-07-30): markup moved 1H -> 4H
 feed = OANDADataFeed()
 
 
@@ -21,7 +22,7 @@ def nearest_below(values, price):
 
 
 def read(sym):
-    h = feed.candles(sym, "1H", 120)
+    h = feed.candles(sym, HTF, 120)
     price = h[-1].c
     swings = detect_swings(h)
     highs = [s.price for s in swings if s.kind.value == "high"]

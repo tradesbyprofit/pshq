@@ -1,6 +1,15 @@
 # TRADES BY SCI — ICC METHOD (Running Notes)
 Extraction source: full YouTube transcripts pulled via fetch_page. Updated through Day 3.
 
+> ⚠️ **PARTIALLY SUPERSEDED — 2026-10-08.** Everything below describes the
+> original Day-1..14 course. On **2026-07-30** Sci published "MY ICC UPDATE"
+> (https://www.youtube.com/watch?v=p7NKipnkvnU) which changes the timeframes:
+> **markup 1H → 4H, entries 15M → 1H, and the 15-minute is abandoned entirely.**
+> The ICC concept, the liquidity-grab logic and "don't chase" all still hold.
+> The current method, with verbatim quotes and a full diff, is in
+> **`transcripts/ICC_Update_2026-07-30.md`**. Read that one first.
+> Evidence on the performance claims is in **`CAVEATS.md`**.
+
 ## THE 3-STEP CORE: "ICC" (Indication → Correction → Continuation)
 ICT-derived pure price-action method. NO INDICATORS. The whole strategy = wait for I, wait for C, enter on C.
 

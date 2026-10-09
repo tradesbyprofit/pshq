@@ -1,21 +1,38 @@
-# ICC scanner — runs every 15 minutes on GitHub's servers (free, no machine needed).
-# Reads credentials from GitHub Secrets (never stored in code).
-# Skips automatically when forex is closed. Persists the weekly-trade counter back
-# to the repo (so the 1-2/week cap survives across runs).
+# Scheduled CHECKS, not scheduled trade calls. Gold only; no broker execution.
+# The engine's London/NY session union is 07:00–21:00 UTC. Do not burn private
+# repository Actions minutes on overnight/weekend checks that cannot send calls.
 name: ICC Scan
 
 on:
   schedule:
-    - cron: "*/15 * * * *"      # every 15 min, UTC
-  workflow_dispatch: {}          # run manually anytime: Actions tab -> "Run workflow"
+    - cron: "*/15 7-20 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      send_test:
+        description: Send one clearly labelled Telegram connection test (not a trade)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
-  contents: write                # lets the job save the trade-counter state file
+  contents: read
+  actions: read
+
+# Never overlap two scans that read/update the same dedupe state and journal.
+concurrency:
+  group: icc-gold-monitor
+  cancel-in-progress: false
 
 jobs:
   scan:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      OANDA_API_TOKEN: ${{ secrets.OANDA_API_TOKEN }}
+      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -23,26 +40,124 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run ICC scan
+      # No pip install: the spot-gold + Telegram path is standard-library only.
+      # Restore the last durable snapshot, instead of committing personal alert
+      # data to Git or starting journal ids and dedupe from zero every 15 min.
+      - name: Restore gold scan state and alert journal
+        id: restore
         env:
-          OANDA_API_TOKEN:  ${{ secrets.OANDA_API_TOKEN }}
-          OANDA_ACCOUNT_ID: ${{ secrets.OANDA_ACCOUNT_ID }}
-          TG_BOT_TOKEN:     ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID:       ${{ secrets.TG_CHAT_ID }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scanner.py --oanda --telegram --paper --market-hours-only
-
-      - name: Save weekly-trade counter (only if a trade changed it)
-        run: |
-          git config user.name  "icc-bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add scanner_state.json 2>/dev/null || true
-          if ! git diff --cached --quiet; then
-            git commit -m "state: weekly trade counter update"
-            git push
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=gold-scan-state&per_page=100" > "$RUNNER_TEMP/gold-artifacts.json"
+          python3 - <<'PY'
+          import datetime as dt, json, os, pathlib
+          artifacts = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'gold-artifacts.json').read_text())['artifacts']
+          valid = [a for a in artifacts if not a['expired'] and a.get('workflow_run', {}).get('head_branch') == 'main']
+          latest = max(valid, key=lambda a: a['id']) if valid else None
+          run_id = str(latest['workflow_run']['id']) if latest else ''
+          renew = latest is None or (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(latest['created_at'].replace('Z', '+00:00'))).days >= 7
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'gold-restore-run').write_text(run_id)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'renew={str(renew).lower()}\n')
+          PY
+          previous_run=$(cat "$RUNNER_TEMP/gold-restore-run")
+          if [ -n "$previous_run" ]; then
+            gh run download "$previous_run" --name gold-scan-state --dir "$RUNNER_TEMP/gold-restore"
+            cp "$RUNNER_TEMP/gold-restore/scanner_state.json" scanner_state.json
+            cp "$RUNNER_TEMP/gold-restore/journal.jsonl" journal.jsonl
           else
-            echo "No state change (no trade taken) — nothing to save."
+            echo "First gold deployment — starting a fresh alert journal."
+            touch journal.jsonl
           fi
+          python3 - <<'PY'
+          import json, pathlib
+          state = json.loads(pathlib.Path('scanner_state.json').read_text())
+          assert isinstance(state, dict) and isinstance(state.get('taken', {}), dict), 'Invalid restored scan state'
+          assert isinstance(state.get('sent_alerts', {}), dict), 'Invalid restored dedupe state'
+          for line in pathlib.Path('journal.jsonl').read_text().splitlines():
+              if line.strip():
+                  assert isinstance(json.loads(line), dict), 'Invalid restored journal event'
+          PY
+          sha256sum scanner_state.json journal.jsonl > "$RUNNER_TEMP/gold-before.sha"
+
+      - name: Check OANDA token is configured
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          if not os.getenv('OANDA_API_TOKEN'):
+              print('::error::Missing OANDA_API_TOKEN. Add a practice token in repository Actions secrets.')
+              sys.exit(1)
+          PY
+
+      - name: Check Telegram settings are configured
+        if: success() || failure()
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          missing = [k for k in ('TG_BOT_TOKEN', 'TG_CHAT_ID') if not os.getenv(k)]
+          if missing:
+              print('::error::Missing Actions secrets: ' + ', '.join(missing))
+              sys.exit(1)
+          PY
+
+      - name: Verify Telegram bot and destination
+        if: success() || failure()
+        run: python3 notifier_telegram.py --check
+
+      - name: Verify live spot gold data (4H and 1H)
+        run: |
+          python3 - <<'PY'
+          import datetime as dt, sys
+          from market_hours import is_forex_open
+          from oanda_feed import OANDADataFeed
+          from scanner import WATCH, ALERT_ONLY, HTF, LTF
+          assert WATCH == ['XAUUSD'] and set(WATCH) <= ALERT_ONLY, 'Deployment must remain gold-only and manual'
+          assert (HTF, LTF) == ('4H', '1H'), 'Unexpected method timeframes'
+          try:
+              feed = OANDADataFeed(verbose=True)
+              now = dt.datetime.now(dt.timezone.utc)
+              for timeframe, max_age in [('4H', 8.25), ('1H', 2.25)]:
+                  candles = feed.candles('XAUUSD', timeframe, 120)
+                  if len(candles) < 20:
+                      raise RuntimeError(f'Not enough completed {timeframe} gold candles')
+                  last = candles[-1].time.replace(tzinfo=dt.timezone.utc)
+                  age = (now - last).total_seconds() / 3600
+                  if is_forex_open() and not 0 <= age <= max_age:
+                      raise RuntimeError(f'Stale {timeframe} gold data ({age:.1f} hours old)')
+              print('Live XAUUSD data verified. No orders placed.')
+          except Exception as e:
+              print(f'::error::Gold data check failed: {e}')
+              sys.exit(1)
+          PY
+
+      - name: Send Telegram activation test (not a trade call)
+        if: github.event_name == 'workflow_dispatch' && inputs.send_test
+        run: python3 notifier_telegram.py --test
+
+      - name: Run gold-only ICC scan (manual entries only)
+        id: scan
+        run: python3 scanner.py --oanda --telegram --market-hours-only
+
+      - name: Check whether the durable state changed
+        id: changed
+        if: always() && steps.restore.outcome == 'success' && steps.scan.outcome != 'skipped'
+        run: |
+          sha256sum scanner_state.json journal.jsonl > "$RUNNER_TEMP/gold-after.sha"
+          if cmp -s "$RUNNER_TEMP/gold-before.sha" "$RUNNER_TEMP/gold-after.sha"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Save after a new/retried alert, or refresh an unchanged snapshot weekly
+      # so a quiet market doesn't let it expire. Human fills/exits stay local.
+      - name: Save gold scan state and alert journal
+        if: always() && steps.changed.outcome == 'success' && (steps.changed.outputs.changed == 'true' || steps.restore.outputs.renew == 'true')
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-scan-state
+          path: |
+            scanner_state.json
+            journal.jsonl
+          if-no-files-found: error
+          retention-days: 90

@@ -104,7 +104,14 @@ def detect_swings(candles: List[Candle], left: int = 2, right: int = 2,
                       ll=ll, hl=(not ll and last_low is not None) or None)
             sw.append(s)
             last_low = s
-    return sw
+    # Collapse adjacent same-kind pivots before returning. The `>=`/`<=` tests
+    # above register BOTH candles when two share an extreme, and equal highs /
+    # equal lows are common on real 4H gold (they are exactly the liquidity this
+    # method hunts). Left in, the duplicate makes the later, less extreme pivot
+    # look like a reversal — so a clean HH+HL uptrend read as LH+HL and
+    # classify_trend() returned NONE. The bot then refused valid setups with
+    # "HTF is ranging/consolidating". See collapse_runs() and test_no_trade_zone.
+    return collapse_runs(sw)
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +135,99 @@ def classify_trend(swings: List[Swing], lookback: int = 6) -> Direction:
     if lh and ll:
         return Direction.BEAR
     return Direction.NONE
+
+
+# ---------------------------------------------------------------------------
+# 3.5  No-trade zone  —  "MY ICC UPDATE", Trades By Sci, 2026-07-30
+# ---------------------------------------------------------------------------
+@dataclass
+class NoTradeZone:
+    high: float                 # the swing high price is currently under
+    low: float                  # the opposite swing that CREATED that high
+    high_swing: Swing
+    low_swing: Swing
+    inside: bool                # price between the two -> no trade
+    side: Direction             # BULL above high, BEAR below low, NONE inside
+
+    @property
+    def width(self) -> float:
+        return self.high - self.low
+
+
+def collapse_runs(swings: List[Swing]) -> List[Swing]:
+    """Collapse adjacent same-kind swings into the one true structural extreme.
+
+    detect_swings() tests pivots with `>=` / `<=`, so two candles that share an
+    extreme BOTH register as swings. That is not a corner case here: *equal
+    highs and equal lows* are precisely what this method hunts for as liquidity,
+    and they are common on real 4H gold.
+
+    Left uncollapsed they cause two concrete failures:
+      - a run of two highs in a row is not a bracket, so no_trade_zone() bails
+        out and the gate silently stops gating;
+      - the LATER, lower high is treated as the swing high, so the indication
+        level and the stop sit inside the real structure.
+
+    Keeps whichever swing in the run holds the more extreme price, so index,
+    time and price stay internally consistent.
+    """
+    out: List[Swing] = []
+    for s in swings:
+        if out and out[-1].kind == s.kind:
+            prev = out[-1]
+            more_extreme = (s.price > prev.price) if s.kind == SwingType.HIGH \
+                else (s.price < prev.price)
+            if more_extreme:
+                out[-1] = s
+        else:
+            out.append(s)
+    return out
+
+
+def no_trade_zone(candles: List[Candle], swings: List[Swing]) -> Optional[NoTradeZone]:
+    """Sci's 4H markup rule, verbatim from "MY ICC UPDATE" (2026-07-30):
+
+        "current price is at 4,036. let me go up. okay, this is my high. mark.
+         this high was created from here. okay, that's my low. ... If price is
+         in between both of these, this means that this is a no trade zone."
+
+    The zone is therefore a PAIR of adjacent swings: the most recent extreme,
+    and the opposite swing that originated the move into it. Price inside the
+    pair is a no-trade zone — "buyers and sellers are in control". A body close
+    OUTSIDE it is the indication, and tells you which side has taken over:
+    "once it breaks past something that lets you know that price has full
+    control until it reaches that level again."
+
+    Body closes only, per "I use candle closes when I'm marking up because that
+    means to me it's a closed deal. A wick to me is price attempted to but
+    failed to do so. I like when everything is certain."
+    """
+    if not candles:
+        return None
+    swings = collapse_runs(swings)
+    if len(swings) < 2:
+        return None
+    last_close = candles[-1].c
+    # The two most recent confirmed swings bracket current price: one extreme
+    # and the swing that created it. (right>0 in detect_swings means these are
+    # already confirmed by later closes, so there is no lookahead here.)
+    a, b = swings[-2], swings[-1]
+    if a.kind == b.kind:                      # two of a kind -> not a bracket
+        return None
+    hi, lo = (a, b) if a.kind == SwingType.HIGH else (b, a)
+    # TOUCHING a level is not breaking it. Sci's trigger is a close PAST the
+    # line: "The moment that price comes above this blue line, I press buy. The
+    # moment price comes below this blue line, I press sell." A close sitting
+    # exactly on the level is still inside the zone. (Strict `<` on both ends
+    # used to misfile that case as BEAR.)
+    if last_close > hi.price:
+        inside, side = False, Direction.BULL
+    elif last_close < lo.price:
+        inside, side = False, Direction.BEAR
+    else:
+        inside, side = True, Direction.NONE
+    return NoTradeZone(high=hi.price, low=lo.price, high_swing=hi, low_swing=lo,
+                       inside=inside, side=side)
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +406,23 @@ def evaluate(symbol: str,
     if trend == Direction.NONE:
         return Signal("NO_TRADE", symbol, Direction.NONE,
                       "HTF is ranging/consolidating -> no trade", when=when, checks=checks)
+
+    # A2b. NO-TRADE ZONE (MY ICC UPDATE, 2026-07-30). "your setup should always
+    # start out of a no trade zone." Price bracketed by the two most recent
+    # swings = buyers AND sellers in control = stand aside. A 4H body close
+    # outside the bracket is what flips it into an indication.
+    zone = no_trade_zone(htf, swings)
+    if zone is None:
+        checks["no_trade_zone"] = "cannot bracket price with two adjacent swings"
+    elif zone.inside:
+        checks["no_trade_zone"] = f"INSIDE {zone.low:.2f}-{zone.high:.2f} -> wait"
+        return Signal("NO_TRADE", symbol, Direction.NONE,
+                      f"price inside no-trade zone {zone.low:.2f}-{zone.high:.2f} "
+                      f"(buyers and sellers both in control) -> wait for a 4H close out",
+                      when=when, checks=checks)
+    else:
+        checks["no_trade_zone"] = (f"OUTSIDE {zone.side.value} "
+                                   f"({zone.low:.2f}-{zone.high:.2f})")
 
     # A3. indication present (a swing broken, new extreme)
     ind = find_indication(htf, swings)
