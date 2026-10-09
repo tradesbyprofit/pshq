@@ -162,9 +162,48 @@ res = b.execute(sig("EURUSD", Direction.BULL, 1.0850, 1.0830), dry_run=True)
 check("eurusd on $1 is sized", res.get("units"), "5")
 check("eurusd on $1 risk_pct", res.get("risk_pct"), "1.000%")
 
+print("\n=== scanner risk config + manual-entry sizing hints ===")
+import scanner
+
+check("RISK_PER_TRADE is Sci's stated 10%", scanner.RISK_PER_TRADE, 0.10)
+check("WATCH is gold only", scanner.WATCH, ["XAUUSD"])
+check("XAUUSD is ALERT_ONLY (nothing auto-executes)", "XAUUSD" in scanner.ALERT_ONLY, True)
+check("markup TF is 4H", scanner.HTF, "4H")
+check("entry TF is 1H", scanner.LTF, "1H")
+check("15M is gone from the scanner", "15M" in (scanner.HTF, scanner.LTF), False)
+
+g = sig("XAUUSD", Direction.BULL, 4036.0, 4011.0, 4086.0)   # $25 4H stop
+h10 = scanner.position_size_hint(g, 10_000.0, 0.10)
+check("$10k at 10% sizes 40 units", "40.00 units XAU_USD" in h10, True)
+check("$10k at 10% risks $1,000", "risks $1,000.00 = 10.0%" in h10, True)
+h1 = scanner.position_size_hint(g, 10_000.0, 0.01)
+check("$10k at 1% sizes 4 units (10x smaller)", "4.00 units XAU_USD" in h1, True)
+check("10% risk is exactly 10x the 1% size", 40.0 / 4.0, 10.0)
+
+sell = sig("XAUUSD", Direction.BEAR, 4036.0, 4061.0, 3986.0)
+hs = scanner.position_size_hint(sell, 500.0, 0.10)
+check("bear hint says SELL", "SELL" in hs, True)
+check("bear hint does NOT say BUY", "BUY" in hs, False)
+check("bull hint says BUY", "BUY" in h10 and "SELL" not in h10, True)
+# direction must come from the signal, not the sign of size_position()'s magnitude
+check("bear hint still sizes 2 units of a $500 acct at 10%", "2.00 units XAU_USD" in hs, True)
+check("unsizeable balance is reported, not silently zero",
+      "CANNOT SIZE" in scanner.position_size_hint(g, 1.0, 0.10), True)
+no_setup = Signal(action="NO_TRADE", symbol="XAUUSD", direction=Direction.NONE,
+                  reason="x", entry=None, stop=None, target=None, rr=None, when=None)
+check("non-setup signals produce no hint",
+      scanner.position_size_hint(no_setup, 10_000.0, 0.10), "")
+
+lad = scanner.risk_ladder_notice(0.10)
+check("ladder notice states the setting", "10.0%" in lad, True)
+check("ladder notice shows 4-loss survival (66%)", "4 -> 66%" in lad, True)
+check("1% ladder shows 4-loss survival (96%)",
+      "4 -> 96%" in scanner.risk_ladder_notice(0.01), True)
+
 print()
 if FAILS:
     print(f"❌ {len(FAILS)} check(s) failed: {', '.join(FAILS)}")
     sys.exit(1)
 print("✅ all sizing checks passed")
 sys.exit(0)
+

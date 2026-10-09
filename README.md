@@ -17,10 +17,13 @@ Two findings from that study **support** how this repo is now configured:
 - **Gold is the best of the four assets** — NASDAQ was negative in *every* configuration. Gold-only is the empirically correct call, not just a preference.
 - **4H ranked top-four**, ahead of 1H — the same direction Sci moved in July 2026.
 
-And one place **not** to follow his lead: Sci suggests **10% risk per trade, 20%
-when confident**. Revelio: *"mathematical suicide"* — those settings *"get
-annihilated."* **This repo stays at 1%**, which their study found was the only
-survivable setting. Keep the wide 4H stops; cut lot size, never stop width.
+**Risk per trade is set to Sci's stated 10%** (`RISK_PER_TRADE` in `scanner.py`,
+operator decision 2026-10-08; `--risk <pct>` overrides). For the record, Revelio's
+study calls 10–20% *"mathematical suicide"* that *"gets annihilated"*, and found
+1% was the only survivable setting — that evidence stays in `CAVEATS.md`. The
+setting is yours to make; `python3 scanner.py --risk 1` changes it without a code
+edit. Note that **because gold is alert-only, nothing auto-executes at 10%** —
+the figure only drives the lot size printed in your alerts.
 
 ## 📈 Markets — gold only
 | | |
@@ -48,7 +51,8 @@ survivable setting. Keep the wide 4H stops; cut lot size, never stop width.
 ## ⚙️ Your confirmed setup
 | Choice | Selected | How it's wired |
 |---|---|---|
-| Execution | **Alert-only** (+ optional paper auto-exec) | `notifier_telegram.py` + `--paper` flag |
+| Execution | **Alert-only** (gold cannot auto-exec on a forex-only practice acct) | `notifier_telegram.py`; `--paper` available once gold is executable |
+| Risk/trade | **10%** — Sci's stated default (operator decision) | `RISK_PER_TRADE` in `scanner.py`, `--risk <pct>` to override |
 | Connection | **OANDA paper account** | `oanda_feed.py` — real spot XAU_USD + BTC_USD |
 | Accounts | **OANDA demo** | Free practice account, real-time data, API key |
 | Notify | **Telegram** | `--telegram` flag |
@@ -86,8 +90,10 @@ python3 scanner.py --oanda          # LIVE scan on real spot data (alert-only)
 
 # Telegram (one-time): @BotFather → token ; @userinfobot → chat id
 export TG_BOT_TOKEN="..." ; export TG_CHAT_ID="..."
-python3 scanner.py --oanda --telegram          # live + alerts
-python3 scanner.py --oanda --telegram --paper  # ...and auto paper-execute setups
+python3 scanner.py --oanda --telegram          # live + alerts (gold, 10% risk sizing)
+python3 scanner.py --oanda --telegram --risk 1 # same, but size alerts at 1% risk
+python3 scanner.py --oanda --telegram --balance 2500   # size against a $2,500 account
+python3 scanner.py --oanda --telegram --paper  # auto paper-execute (needs gold enabled)
 
 # other modes
 python3 scanner.py                   # CCXT crypto data (no key)
@@ -145,7 +151,7 @@ python3 test_sizing.py      # 50 offline checks: lot rules, JPY conversion, $1 f
 ```
 
 ## Tuning knobs (edit the files)
-- `scanner.py`: `WATCH` (**gold only** — add a symbol here to re-add a market), `HTF="4H"`/`LTF="1H"`, `ALERT_ONLY`, `Governor(target_per_week=1, max_per_week=2)`, `min_rr`.
+- `scanner.py`: `WATCH` (**gold only** — add a symbol here to re-add a market), `HTF="4H"`/`LTF="1H"`, `ALERT_ONLY`, `RISK_PER_TRADE` (**10%**), `DEFAULT_BALANCE`, `Governor(target_per_week=1, max_per_week=2)`, `min_rr`.
 - `icc_engine.py`: swing sensitivity (`left`/`right`), `min_rr`, session hours, trend lookback, `no_trade_zone()`.
 - ⚠️ **`left`/`right` is the single biggest unvalidated parameter in this bot.** Sci has never stated a fractal window, and Reddit flags the same gap: *"Sci doesn't tell us the rules for marking the structure points."* The repo uses `left=2, right=2`. Backtest it before trusting it.
 - Add markets later: just add to `WATCH` + a `SYMBOL_MAP` entry in `feeds.py` (e.g. ETH, NAS100).

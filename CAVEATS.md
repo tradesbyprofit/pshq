@@ -107,10 +107,17 @@ Four consecutive losses — an ordinary event, not a tail:
 | 2% | 92.2% |
 | **1% (this repo's setting)** | **96.1%** |
 
-**This repo keeps `risk_fraction=0.01` and that is deliberate.** His 4H update
-actually agrees with the principle — *"if you can't put whatever stop-loss you
-want, lower your lot size"* — he just pairs it with a percentage that destroys
-accounts. Keep the wide stops. Keep 1%.
+> **Operator decision 2026-10-08: this repo is wired to Sci's stated 10%**
+> (`RISK_PER_TRADE = 0.10` in `scanner.py`, `--risk <pct>` to override). The
+> evidence above is retained as the record; the choice is the operator's to make.
+> Two things worth knowing about that choice:
+> - **It is currently inert.** `XAUUSD` is in `ALERT_ONLY` because OANDA practice
+>   accounts are forex-only, so no order is ever sized at 10%. The number only
+>   drives the lot size printed in Telegram alerts for manual entry. It goes live
+>   the moment gold execution is enabled.
+> - His 4H update agrees with the *principle* — *"if you can't put whatever
+>   stop-loss you want, lower your lot size"* — and `size_position()` implements
+>   it: the stop goes where structure says, the lot absorbs the risk.
 
 ---
 
@@ -173,7 +180,10 @@ So, in order:
 
 1. **Do not fund a live account.** The OANDA practice account is free and the
    bot already paper-executes there. Use it.
-2. **Keep risk at 1%.** Never 10% or 20%, regardless of confidence.
+2. **Know what your risk setting does before it fires.** It is currently 10%
+   (Sci's stated default, operator's call). `python3 scanner.py --risk 1` runs
+   the identical method at 1%. At 10%, four straight losses leaves 66% of the
+   account; at 1% it leaves 96%. The scanner prints this ladder on every start.
 3. **Collect 50+ closed 4H gold trades**, then `python3 trade_stats.py`. If
    expectancy is negative there, it will be negative with real money, except
    real money also charges you spread and swap.

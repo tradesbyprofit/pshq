@@ -34,8 +34,14 @@ from dataclasses import dataclass
 
 # --- this repo's actual operating parameters ---------------------------------
 TRADES_PER_WEEK = 1.0     # scanner.Governor(target_per_week=1, max_per_week=2)
-RISK_PCT = 1.0            # scanner.py -> OANDAPaperBroker(risk_fraction=0.01)
 WEEKS_PER_YEAR = 52.0
+try:                      # stay in sync with whatever the scanner is set to
+    from scanner import RISK_PER_TRADE as _RISK_FRACTION
+    RISK_PCT = _RISK_FRACTION * 100.0
+except Exception:
+    RISK_PCT = 10.0       # Sci's stated default; operator decision 2026-10-08
+GOLD_MIN_UNITS = 0.01     # OANDA minimum lot on XAU_USD
+GOLD_TYP_STOP = 25.0      # representative 4H structural stop, $ per oz
 
 # OANDA lot rules live in oanda_feed.py (MIN_FX_UNITS / MIN_OTHER_UNITS); this
 # section imports them rather than duplicating them.
@@ -387,6 +393,11 @@ def section_measured(start: float, goal: float) -> None:
     print("  Caveat: they tested the OLDER 15m/5m entry variant. The new 4H->1H")
     print("  version in this repo has not been backtested by anyone yet.")
     print()
+    print(f"  ⚠️ Those figures are specifically the 1%-risk configuration. This")
+    print(f"     scanner is currently set to {RISK_PCT:.0f}% risk/trade. Revelio ran that")
+    print("     setting too and reported that it 'gets annihilated' — so 3.8%/yr is")
+    print("     the SURVIVABLE case, not the one this repo is configured for.")
+    print()
 
 
 # --- real data hook ----------------------------------------------------------
@@ -429,8 +440,9 @@ def main() -> int:
                     help="spread+slippage per trade as a fraction of 1R")
     ap.add_argument("--paths", type=int, default=3000)
     ap.add_argument("--max-years", type=float, default=60.0)
-    ap.add_argument("--floor", type=float, default=0.20,
-                    help="balance below which the account is dead (min legal order)")
+    ap.add_argument("--floor", type=float, default=None,
+                    help="balance below which the account is dead. Default is "
+                         "derived from gold's minimum legal order at --risk.")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--from-demo", action="store_true",
                     help="derive the edge from your real OANDA practice history")
@@ -458,11 +470,16 @@ def main() -> int:
         else:
             edge = real
 
+    # Ruin floor = the smallest balance that can still place gold's minimum lot
+    # inside the risk budget. It scales with --risk (higher risk -> lower floor).
+    floor = a.floor if a.floor is not None else \
+        GOLD_MIN_UNITS * GOLD_TYP_STOP / (a.risk / 100.0)
+
     section_takes(a.start, a.goal, a.per_week)
     section_monte_carlo(a.start, a.goal, edge, a.risk, a.per_week,
-                        a.paths, a.max_years, a.floor, a.seed)
+                        a.paths, a.max_years, floor, a.seed)
     section_sensitivity(a.start, a.goal, a.risk, a.per_week,
-                        min(a.paths, 1200), a.max_years, a.floor, a.seed)
+                        min(a.paths, 1200), a.max_years, floor, a.seed)
     section_min_account(a.risk)
     if a.measured:
         section_measured(a.start, a.goal)
