@@ -11,11 +11,11 @@ from oanda_feed import OANDADataFeed, OANDAPaperBroker
 
 sym = (sys.argv[1] if len(sys.argv) > 1 else "XAUUSD").upper()
 feed = OANDADataFeed()
-price = feed.candles(sym, "1H", 5)[-1].c
+price = feed.candles(sym, "4H", 5)[-1].c   # 4H markup per MY ICC UPDATE (2026-07-30)
 
 # hypothetical BULL ICC setup at current price (for sizing demonstration only)
 if "XAU" in sym:
-    sl_pts, tp_pts = 5.0, 10.0
+    sl_pts, tp_pts = 25.0, 50.0   # 4H-scaled gold stop, not the old 15M-scale $5
 else:
     sl_pts, tp_pts = 500.0, 1000.0
 sig = Signal(action="SETUP", symbol=sym, direction=Direction.BULL,

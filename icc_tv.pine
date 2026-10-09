@@ -1,18 +1,40 @@
 // =============================================================================
 //  ICC — Indication / Correction / Continuation  (Trades By Sci method)
 //  Pure price-action. No indicators. Plots swing structure + marks indications.
-//  Drop on a TradingView chart (XAUUSD or BTCUSD), 1H or 4H, add alerts.
+//
+//  ⚠️ UPDATED for "MY ICC UPDATE" (Sci, 2026-07-30) — GOLD ONLY, 4H + 1H:
+//     Drop this on a TradingView **XAUUSD 4H** chart for markup. Do your entries
+//     on the **1H**. The 15-minute is abandoned: "the volume is excessive
+//     throughout New York session, breaks structure a lot on the 15-minute...
+//     a lot of the noise is cleared out by trading on the 4 hour and 1 hour."
 //
 //  HOW TO USE (matches the Python icc_engine.py):
-//   1) Load XAUUSD or BTCUSD on 1H (or 4H if 1H is choppy).
+//   1) Load XAUUSD on the 4H. This is your ONLY markup timeframe now.
 //   2) The script labels pivots HH/HL/LH/LL and draws the active swing levels.
-//   3) When price body-closes beyond a swing = INDICATION (blue up / red down).
+//   3) Draw the NO-TRADE ZONE by hand: from current price go up to the last
+//      swing high, then back to the swing low that CREATED that high. Price
+//      between the two = no trade. ("A no trade zone should be looked at as
+//      good — it makes it easier to understand where price is trying to go.")
+//      NOTE: this script does not yet plot that band; it is on the TODO list.
+//   4) Set TWO alerts on the zone edges — crossing up AND crossing down,
+//      "trigger every time". Sci: "I live off of alerts... literally cannot
+//      function without them."
+//   5) When a 4H candle BODY-CLOSES beyond the zone = INDICATION. Closes only:
+//      "a wick is price attempted to but failed to do so."
 //      -> Do NOT trade yet. This just sets bias + future target.
-//   4) Wait for the CORRECTION (pullback). The "Setup Ready" label fires when
-//      price reclaims the level a SECOND time (continuation) = your entry.
-//   5) Set the built-in alerts (see bottom) so TV notifies you — you don't stare.
+//   6) Drop to the 1H. Enter only when the 1H structure MATCHES the 4H —
+//      lower highs + lower lows under the level for a sell, the mirror for a
+//      buy. "because now the 1 hour and 4 hour match." Second reclaim of the
+//      level still counts ("especially if price has already repeated it once
+//      before, just take it").
+//   7) Stop goes beyond 4H structure and is deliberately WIDE. Control risk with
+//      lot size, never by tightening the stop: "if you can't put whatever
+//      stop-loss you want, lower your lot size." Trade stays valid until a 4H
+//      level breaks — "just because price sold off doesn't make it invalid."
 //
-//  This is tooling, not financial advice. Demo first.
+//  This is tooling, not financial advice. Demo first. See CAVEATS.md — the
+//  only independent backtest of this strategy returned ~3.8%/yr at a 53.8%
+//  max drawdown, and the 10-20% risk-per-trade Sci mentions is not survivable.
 // =============================================================================
 //@version=5
 indicator("ICC — Trades By Sci Method", shorttitle="ICC", overlay=true, max_labels_count=500)

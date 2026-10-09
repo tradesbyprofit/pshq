@@ -32,5 +32,8 @@ jobs:
       - name: ICC engine self-test
         run: python3 icc_engine.py
 
+      - name: No-trade zone + swing detection
+        run: python3 test_no_trade_zone.py
+
       - name: Reality-check calculator (smoke run)
         run: python3 compound_reality.py --paths 50 --max-years 5

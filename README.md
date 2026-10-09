@@ -1,12 +1,49 @@
 # ICC Day-Trading Bot — Trades By Sci method
-*A patient, setup-only alert bot. Target **1 trade/week** (2 max), often **zero**. Never chases. Auto paper-execution on the OANDA demo.*
+*A patient, setup-only alert bot. **GOLD (XAUUSD) ONLY.** Markup on **4H**, entries on **1H**. Target **1 trade/week** (2 max), often **zero**. Never chases. Auto paper-execution on the OANDA demo.*
 
-## 📈 Markets (current base)
-Your OANDA **demo is forex-only** (68 pairs, no metals/crypto yet), so the bot currently trades these — all excellent for the ICC method (clean trends, London/NY volume):
-- **EUR/USD, GBP/USD, USD/JPY, GBP/JPY** (`WATCH` in `scanner.py` — edit freely)
-- **Gold (XAU) & BTC:** data feeds are built; we'll enable trading for them later (gold = enable Metals on the account; BTC = a crypto testnet).
+> **Updated 2026-10-08 to Sci's "MY ICC UPDATE" (2026-07-30).** The 15-minute
+> timeframe is gone; markup moved 1H→4H; entries moved 15M→1H; and the
+> no-trade zone now has an explicit construction rule. Full extraction with
+> verbatim quotes: **`transcripts/ICC_Update_2026-07-30.md`**.
 
-> ⏰ **Forex hours:** the market closes **Fri 21:00 UTC** and reopens **Sun 22:00 UTC**. Orders outside that window return `MARKET_HALTED` (the bot logs this clearly). Run scans only during open hours.
+## 🚨 Read CAVEATS.md before funding anything
+`CAVEATS.md` collects sourced evidence about the **performance claims** (not the
+method). Headline: Revelio Trading coded this exact strategy and ran **2,500+
+backtests over 10 years**; the best version, on **gold + 4H at 1% risk**, returned
+**+45.7% total ≈ 3.8%/yr with a 53.8% max drawdown**, and *"the strategy made no
+real progress in the last 8½ years."* Their verdict: *"barely"* works.
+
+Two findings from that study **support** how this repo is now configured:
+- **Gold is the best of the four assets** — NASDAQ was negative in *every* configuration. Gold-only is the empirically correct call, not just a preference.
+- **4H ranked top-four**, ahead of 1H — the same direction Sci moved in July 2026.
+
+And one place **not** to follow his lead: Sci suggests **10% risk per trade, 20%
+when confident**. Revelio: *"mathematical suicide"* — those settings *"get
+annihilated."* **This repo stays at 1%**, which their study found was the only
+survivable setting. Keep the wide 4H stops; cut lot size, never stop width.
+
+## 📈 Markets — gold only
+| | |
+|---|---|
+| **Traded** | `XAUUSD` only (`WATCH` in `scanner.py`) |
+| **Dropped** | EUR/USD, GBP/USD, USD/JPY, GBP/JPY, BTC — even though Sci still shows NASDAQ/BTC examples |
+| **Markup TF** | **4H** |
+| **Entry TF** | **1H** |
+| **Abandoned** | **15M** — *"volume is excessive throughout New York session, breaks structure a lot on the 15-minute"* |
+
+> ⚠️ **Blocker to paper-trading gold:** your OANDA **practice** account is
+> forex-only (68 pairs, no metals), so `XAUUSD` is in `ALERT_ONLY` and the bot
+> will **alert but not execute**. To paper-trade gold you must either enable
+> Metals on the OANDA account or point `oanda_feed.py` at a broker offering spot
+> gold. Until then: alerts on Telegram, no orders. Gold also needs a balance of
+> roughly **$25+** before a 0.01-lot minimum fits inside a 1% risk budget at
+> 4H stop widths — `python3 compound_reality.py --min-account`.
+
+> ⏰ **Market hours:** spot gold trades nearly 24h but closes **Fri 21:00 UTC**
+> and reopens **Sun 22:00 UTC**. Orders outside that window return
+> `MARKET_HALTED`. Sci also skips **Sunday open gaps** — *"I need New York
+> session to bring some volume"* — though he refuses to make it a hard rule, so
+> this repo logs it rather than enforcing it.
 
 ## ⚙️ Your confirmed setup
 | Choice | Selected | How it's wired |
@@ -23,8 +60,10 @@ Your OANDA **demo is forex-only** (68 pairs, no metals/crypto yet), so the bot c
 ## Files
 | File | Purpose |
 |---|---|
-| **METHOD.md** | ⭐ The full method (all 14 videos synthesized) — the bot's brain. Read first. |
-| **icc_engine.py** | The ICC detector → `SETUP`/`NO_TRADE` + entry/stop/target/R:R + checklist. Self-tested. |
+| **CAVEATS.md** | 🚨 Sourced evidence on the *performance claims*, incl. the only independent backtest. **Read before funding anything.** |
+| **METHOD.md** | The original 14-video course synthesized. ⚠️ **Superseded on timeframes** by the 2026-07-30 update — still correct on the ICC concept. |
+| **transcripts/ICC_Update_2026-07-30.md** | ⭐ **The current method.** Full extraction of "MY ICC UPDATE" with verbatim quotes + a diff vs. METHOD.md. |
+| **icc_engine.py** | The ICC detector → `SETUP`/`NO_TRADE` + entry/stop/target/R:R + checklist. Now includes `no_trade_zone()`. Self-tested. |
 | **oanda_feed.py** | ⭐ OANDA practice feed (real spot gold + BTC) + optional paper broker. |
 | **feeds.py** | Backup data via CCXT (OKX/Kucoin) — no key, crypto-only. |
 | **scanner.py** | Live monitor. Weekly cap (1 target/2 max) + "don't chase" guard. State persists. |
@@ -32,8 +71,9 @@ Your OANDA **demo is forex-only** (68 pairs, no metals/crypto yet), so the bot c
 | **icc_tv.pine** | Optional TradingView indicator (visual; labels swings + indications). |
 | **trade_stats.py** | Your real demo record → win rate, profit factor, **expectancy/trade**. |
 | **compound_reality.py** | ⭐ "Can $1 become $1,000,000?" answered with arithmetic + Monte Carlo. |
-| **test_sizing.py** | Offline regression tests for position sizing / lot rules. Run in CI. |
-| transcripts/ | Per-video extraction notes. |
+| **test_sizing.py** | 50 offline checks: position sizing, lot rules, quote-currency conversion. Run in CI. |
+| **test_no_trade_zone.py** | Offline checks for the zone gate + the tied-extreme swing bug. Run in CI. |
+| transcripts/ | Per-video extraction notes (Day 1 + the 2026-07 update). |
 
 ## Run it
 ```bash
@@ -62,13 +102,24 @@ python3 test_sizing.py               # offline sizing/lot-rule regression tests
 ```
 In production, schedule `scanner.py --oanda --telegram` every 15 min (cron/systemd) so it runs unattended.
 
-## The method in one breath
-**ICC = Indication → Correction → Continuation.** No indicators.
-1. **Mark up HTF (1H/4H):** swings → trend (HH/HL bull, LH/LL bear). Range = no-trade.
-2. **Indication:** a swing *breaks* (new extreme) → bias + TP. Don't trade it.
-3. **Correction:** pullback that grabs liquidity (watch 15M).
-4. **Continuation:** price reclaims the level a **2nd time** → **enter**. SL past correction extreme; TP = indication's new extreme; hold runner while structure holds.
-Gate rules: **buy only above a broken swing high; sell only below a broken swing low.** No break = **NO TRADE ZONE.**
+## The method in one breath (2026-07-30 version)
+**ICC = Indication → Correction → Continuation.** No indicators. **Two timeframes only.**
+1. **Mark up the 4H from candle CLOSES** — never wicks: *"a wick is price attempted to but failed."*
+2. **Draw the NO-TRADE ZONE:** from current price go up to the last swing **high**, then back to the swing **low that created it**. Price between them = buyers *and* sellers in control = **wait**. *"A no trade zone should be looked at as good."*
+3. **Indication:** a 4H body **closes outside** the zone → bias + target. *"The moment price comes above this blue line, I press buy. Below it, I press sell."* Don't trade it yet.
+4. **Correction:** 1–2 candles back toward the broken level on the 4H. That extreme is your **invalidation** — also check what would go *against* you.
+5. **Continuation:** drop to the **1H** and enter only when 1H structure **matches** the 4H (lower highs + lower lows under the level for a sell). *"Because now the 1 hour and 4 hour match."* A **2nd reclaim** still counts: *"especially if price has already repeated it once before, just take it."*
+6. **Stop:** beyond 4H structure, **deliberately wide**. *"If you can't put whatever stop-loss you want, lower your lot size."* The trade is valid until a **4H level breaks** — *"just because price sold off doesn't make it invalid."*
+7. **Target:** the opposite zone edge — *"price moves zone to zone."* At the target, partials or runner: *"it's up to me at that point."*
+
+**Alerts, not staring:** one alert on each zone edge, *crossing up* and *crossing down*, trigger every time. *"I live off of alerts... literally cannot function without them."* That is exactly what `scanner.py` + Telegram already do.
+
+> ⚠️ **Disagreement worth knowing:** Sci enters on a **1H body close** back over
+> the level. Revelio's backtest found the best entry was **as soon as price
+> touches the break-of-structure level** — *"no added buffer, no waiting for the
+> candlestick to close"* (waiting for the close: profit factor **1.032**). They
+> tested the older 15m/5m variant, so the new 4H→1H version is untested by
+> anyone. This is the most valuable thing left to measure — see CAVEATS.md §5.
 
 ## ⚠️ Reality check
 - Creator claims >90% win rate — treat as **unverified**. Validate on **demo/paper** for weeks before risking real money (his own Day-13 advice).
@@ -94,6 +145,7 @@ python3 test_sizing.py      # 50 offline checks: lot rules, JPY conversion, $1 f
 ```
 
 ## Tuning knobs (edit the files)
-- `scanner.py`: `WATCH`, `HTF`/`LTF`, `Governor(target_per_week=1, max_per_week=2)`, `min_rr`.
-- `icc_engine.py`: swing sensitivity (`left`/`right`), `min_rr`, session hours, trend lookback.
+- `scanner.py`: `WATCH` (**gold only** — add a symbol here to re-add a market), `HTF="4H"`/`LTF="1H"`, `ALERT_ONLY`, `Governor(target_per_week=1, max_per_week=2)`, `min_rr`.
+- `icc_engine.py`: swing sensitivity (`left`/`right`), `min_rr`, session hours, trend lookback, `no_trade_zone()`.
+- ⚠️ **`left`/`right` is the single biggest unvalidated parameter in this bot.** Sci has never stated a fractal window, and Reddit flags the same gap: *"Sci doesn't tell us the rules for marking the structure points."* The repo uses `left=2, right=2`. Backtest it before trusting it.
 - Add markets later: just add to `WATCH` + a `SYMBOL_MAP` entry in `feeds.py` (e.g. ETH, NAS100).

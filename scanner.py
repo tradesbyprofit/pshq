@@ -17,11 +17,28 @@ from typing import List, Protocol
 from icc_engine import Candle, evaluate, Signal, Direction
 import trade_manager
 
-# OANDA demo offers 68 forex pairs (no metals/crypto yet).
-# Watchlist = liquid majors + the most popular volatile cross (great ICC structure).
-WATCH = ["EURUSD", "GBPUSD", "USDJPY", "GBPJPY", "BTCUSD", "XAUUSD"]
-ALERT_ONLY = {"BTCUSD", "XAUUSD"}     # monitored + alerted, not auto-traded (OANDA demo can't trade them)
-HTF = "1H"; LTF = "15M"               # markup TF / entry TF (4H/5M as alternates)
+# ---------------------------------------------------------------------------
+# GOLD ONLY. Operator decision 2026-10-08: follow Sci's method, but trade it on
+# XAUUSD exclusively even when he shows NASDAQ / BTC / forex examples. Gold is
+# the one market he trades most and the one with the cleanest 4H structure.
+# To re-add a market: append it here and make sure feeds.py/oanda_feed.py can
+# resolve it. Nothing else needs to change.
+# ---------------------------------------------------------------------------
+WATCH = ["XAUUSD"]
+
+# OANDA *practice* accounts are forex-only (68 pairs, no metals), so XAUUSD
+# cannot be paper-executed there yet. Until Metals is enabled on the account or
+# you point the bot at a broker that offers spot gold, it stays alert-only.
+# Remove "XAUUSD" from this set the moment gold becomes executable.
+ALERT_ONLY = {"XAUUSD"}
+
+# MY ICC UPDATE (Trades By Sci, 2026-07-30): markup on 4H, entries on 1H.
+# The 15-minute is abandoned entirely — "sometimes the volume is a little bit
+# excessive throughout New York session, breaks structure a lot on the
+# 15-minute time frame. So a lot of the noise is cleared out by trading on the
+# 4 hour and 1 hour time frame." Two timeframes only: "You only need two time
+# frames... Don't over complicate it at all."
+HTF = "4H"; LTF = "1H"
 STATE_FILE = "scanner_state.json"
 
 try:

@@ -48,8 +48,8 @@ PAIR_SPECS = [
     ("GBPUSD", 1.2700,   0.0025),   # ~25 pip stop
     ("USDJPY", 150.00,   0.5000),   # ~50 pip stop, quote is JPY
     ("GBPJPY", 190.00,   0.7000),   # ~70 pip stop, quote is JPY
-    ("XAUUSD", 2000.00,  12.00),    # ~$12 gold stop, 0.01 unit min
-    ("BTCUSD", 60000.0,  900.0),    # ~$900 BTC stop, 0.01 unit min
+    ("XAUUSD", 4000.00,  25.00),    # ~$25 4H gold stop, 0.01 unit min
+    ("BTCUSD", 60000.0,  900.0),    # (not watched any more — gold only)
 ]
 
 
@@ -339,6 +339,56 @@ def section_min_account(risk_pct: float) -> None:
     print()
 
 
+# --- section 4: the only published independent backtest ----------------------
+# Revelio Trading, "I Coded Trades By Sci's Trading Strategy. Does It Work?"
+# https://www.youtube.com/watch?v=bZzREoCf0z0  (2026-08-15)
+# 2,500+ backtests, 10 years, 4 markets. Best configuration found, gold+4H,
+# at 1% risk per trade: +45.7% total, ~3.63% annualized (3.84% recomputed from
+# the total), max drawdown 53.8%. See CAVEATS.md.
+MEASURED_TOTAL_RETURN = 0.457
+MEASURED_YEARS = 10.0
+MEASURED_MAX_DD = 0.538
+MEASURED_ANNUAL = (1 + MEASURED_TOTAL_RETURN) ** (1 / MEASURED_YEARS) - 1
+
+
+def section_measured(start: float, goal: float) -> None:
+    print("=" * 74)
+    print("  4. THE ONLY PUBLISHED BACKTEST OF THIS EXACT STRATEGY")
+    print("=" * 74)
+    print("  Revelio Trading coded ICC as taught and ran 2,500+ backtests over")
+    print("  10 years on gold, silver, NASDAQ and BTC. Best config, gold + 4H,")
+    print("  at 1% risk per trade:")
+    print(f"      total return over {MEASURED_YEARS:.0f} years : "
+          f"+{MEASURED_TOTAL_RETURN * 100:.1f}%")
+    print(f"      annualized               : {MEASURED_ANNUAL * 100:.2f}%")
+    print(f"      max drawdown             : {MEASURED_MAX_DD * 100:.1f}%")
+    print("      win rate                 : \"nowhere near the 90% he claims\"")
+    print("      profit factor            : \"not around 10\"")
+    print("-" * 74)
+    for s in (start, 1_000.0, 10_000.0, 100_000.0):
+        if s <= 0 or s >= goal:
+            continue
+        yrs = math.log(goal / s) / math.log(1 + MEASURED_ANNUAL)
+        tag = "  <- your start" if s == start else ""
+        print(f"  ${s:>10,.0f} -> ${goal:,.0f} at {MEASURED_ANNUAL * 100:.2f}%/yr "
+              f"= {yrs:>7.0f} years{tag}")
+    print("-" * 74)
+    print(f"  A {MEASURED_MAX_DD * 100:.1f}% drawdown at 1% risk is roughly a "
+          f"54-trade losing stretch.")
+    print("  Revelio also found four consecutive NEGATIVE years (2019-2022), and")
+    print("  that removing 2017 leaves the strategy \"pretty much break-even\" —")
+    print("  no real progress in the last 8.5 years. Their verdict: \"barely\" works.")
+    print()
+    print("  Two things in that study that support the current repo config:")
+    print("    - GOLD is the best of the four assets. NASDAQ was negative in every")
+    print("      single configuration. Gold-only is the empirically correct call.")
+    print("    - 4H occupied the top four rankings, ahead of 1H. Sci's July 2026")
+    print("      move to 4H markup points the same way.")
+    print("  Caveat: they tested the OLDER 15m/5m entry variant. The new 4H->1H")
+    print("  version in this repo has not been backtested by anyone yet.")
+    print()
+
+
 # --- real data hook ----------------------------------------------------------
 def edge_from_demo(cost_r: float) -> Edge | None:
     """Pull win rate / avg win / avg loss from YOUR OANDA practice history."""
@@ -385,6 +435,13 @@ def main() -> int:
     ap.add_argument("--from-demo", action="store_true",
                     help="derive the edge from your real OANDA practice history")
     ap.add_argument("--min-account", action="store_true", help="only print section 3")
+    # Section 4 (the published backtest) prints by default; --measured is
+    # accepted because CAVEATS.md documents that exact command, and
+    # --no-measured turns it off.
+    ap.add_argument("--measured", action="store_true",
+                    help="include the published-backtest section (already the default)")
+    ap.add_argument("--no-measured", dest="measured", action="store_false")
+    ap.set_defaults(measured=True)
     a = ap.parse_args()
 
     print()
@@ -407,6 +464,8 @@ def main() -> int:
     section_sensitivity(a.start, a.goal, a.risk, a.per_week,
                         min(a.paths, 1200), a.max_years, a.floor, a.seed)
     section_min_account(a.risk)
+    if a.measured:
+        section_measured(a.start, a.goal)
 
     print("=" * 74)
     print("  BOTTOM LINE")
@@ -433,6 +492,12 @@ def main() -> int:
     print("    - Real capital enters after the demo edge survives months, and it")
     print("      enters as savings from income. Income is the only reliable way to")
     print("      add zeroes; trading multiplies whatever zeroes are already there.")
+    print("    - Section 4 is the only independent backtest of THIS strategy that")
+    print("      exists. It says gold on 4H is the best corner of it and that the")
+    print("      best version returns ~3.8%/yr against a 53.8% drawdown. Read")
+    print("      CAVEATS.md before funding anything, and note it there: Sci's own")
+    print("      10-20% risk-per-trade advice is the one part of his lead worth")
+    print("      NOT following. This repo stays at 1%.")
     print("=" * 74)
     print()
     return 0

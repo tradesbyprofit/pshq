@@ -78,5 +78,5 @@ if __name__ == "__main__":
     # quick live smoke test
     f = CCXTDataFeed(verbose=True)
     for sym in ["BTCUSD", "XAUUSD"]:
-        for tf in ["1H", "15M"]:
+        for tf in ["4H", "1H"]:
             f.candles(sym, tf, 10)
