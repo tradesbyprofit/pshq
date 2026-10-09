@@ -73,10 +73,12 @@ the figure only drives the lot size printed in your alerts.
 | **scanner.py** | Live monitor. Weekly cap (1 target/2 max) + "don't chase" guard. State persists. |
 | **notifier_telegram.py** | Telegram alerts on A+ setups only. |
 | **icc_tv.pine** | Optional TradingView indicator (visual; labels swings + indications). |
-| **trade_stats.py** | Your real demo record → win rate, profit factor, **expectancy/trade**. |
+| **journal.py** | ⭐ **Your hand-placed gold trades** — what the bot said vs. what you did → **expectancy in R**. Gold is alert-only, so this is the only real record that exists. |
+| **trade_stats.py** | Expectancy from OANDA closed trades *or* `--source journal`. |
 | **compound_reality.py** | ⭐ "Can $1 become $1,000,000?" answered with arithmetic + Monte Carlo. |
-| **test_sizing.py** | 50 offline checks: position sizing, lot rules, quote-currency conversion. Run in CI. |
-| **test_no_trade_zone.py** | Offline checks for the zone gate + the tied-extreme swing bug. Run in CI. |
+| **test_sizing.py** | 69 offline checks: position sizing, lot rules, quote-currency conversion, manual-entry hints. Run in CI. |
+| **test_no_trade_zone.py** | 34 offline checks for the zone gate + the tied-extreme swing bug. Run in CI. |
+| **test_journal.py** | Offline checks for the journal's R arithmetic + slippage sign convention. Run in CI. |
 | transcripts/ | Per-video extraction notes (Day 1 + the 2026-07 update). |
 
 ## Run it
@@ -101,10 +103,13 @@ python3 scanner.py --demo            # synthetic, offline
 python3 icc_engine.py                # engine self-test
 
 # is any of this actually going to work?
-python3 trade_stats.py               # your real demo expectancy (needs closed trades)
+python3 journal.py                   # your gold record: open, awaiting decision, expectancy
+python3 trade_stats.py               # expectancy (OANDA history, or the journal if empty)
+python3 trade_stats.py --source journal   # your hand-traded gold, measured in R
 python3 compound_reality.py          # what $1 -> $1,000,000 really costs
-python3 compound_reality.py --from-demo   # ...using YOUR measured edge, not an assumption
+python3 compound_reality.py --from-journal # ...using YOUR measured edge, not an assumption
 python3 test_sizing.py               # offline sizing/lot-rule regression tests
+python3 test_journal.py              # offline journal arithmetic tests
 ```
 In production, schedule `scanner.py --oanda --telegram` every 15 min (cron/systemd) so it runs unattended.
 
@@ -133,6 +138,41 @@ In production, schedule `scanner.py --oanda --telegram` every 15 min (cron/syste
 - **Gold and BTC have a real minimum balance.** One minimum OANDA lot risks ~$0.12 on XAU and ~$9 on BTC, so honouring a 1% budget needs **~$12 (gold)** / **~$900 (BTC)**. Below that the bot now **skips with `TOO_SMALL`** instead of submitting an order it cannot size. `python3 compound_reality.py --min-account` prints the floor for every watched pair.
 - The gold feed uses **PAXG** (crypto gold token) as a close proxy — prices track XAUUSD but aren't identical to your broker's spot quote. Confirm execution levels on your actual broker chart.
 - **Not financial advice.** Markets lose money. Start tiny.
+
+## The journal — measuring YOUR execution, not just the method's
+
+Gold is alert-only, so OANDA never holds a closed gold trade and the broker has
+nothing to report. `journal.py` is the record instead: **the scanner writes every
+alert automatically**, and you add what you actually did.
+
+```bash
+python3 journal.py                    # dashboard: open, awaiting decision, expectancy
+python3 journal.py fill --last --price 4037.2 --units 40
+python3 journal.py exit --last --price 3990 --reason tp
+python3 journal.py skip --last --reason "Sunday gap, no NY volume yet"
+python3 journal.py report             # expectancy in R + you vs. the bot
+python3 compound_reality.py --from-journal   # project forward from YOUR measured edge
+```
+
+Everything is measured in **R** (multiples of the amount risked), so it stays
+comparable as your balance moves. The report deliberately separates two things
+that are easy to conflate:
+
+- **Does the method work?** — win rate, avg win/loss in R, profit factor,
+  expectancy per trade.
+- **Do you execute it?** — average entry slippage vs. the alert price (negative =
+  a real cost), whether you sized as advised, and whether you actually exited at
+  your stop when a trade went against you. A positive-expectancy method held past
+  its stop still loses money, and only this second column shows it.
+
+Recording **skips** matters as much as fills. If the setups you passed on would
+have won, your discretion is costing you; if they would have lost, your
+discretion *is* the edge. There is no way to tell which without writing them down.
+
+`journal.jsonl` is gitignored — it is your personal execution data. Point
+`ICC_JOURNAL` at a synced path to back it up. Under 10 closed trades
+`--from-journal` refuses to build an edge; under 30 the report warns you the
+number is noise.
 
 ## Position sizing (fixed)
 Sizing lives in `oanda_feed.size_position()` and is covered by `test_sizing.py`. Three bugs that used to make small accounts untradeable and JPY accounts under-risked:

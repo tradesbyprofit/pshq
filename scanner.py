@@ -17,6 +17,11 @@ from typing import List, Protocol
 from icc_engine import Candle, evaluate, Signal, Direction
 import trade_manager
 
+try:
+    import journal                    # alert-vs-actual trade journal
+except Exception:
+    journal = None
+
 # ---------------------------------------------------------------------------
 # GOLD ONLY. Operator decision 2026-10-08: follow Sci's method, but trade it on
 # XAUUSD exclusively even when he shows NASDAQ / BTC / forex examples. Gold is
@@ -97,7 +102,43 @@ class Governor:
         return taken_this_week < self.target_per_week
 
 
+def _journal_alert(sig, balance: float, risk: float) -> str:
+    """Record a fired setup in journal.py so a hand-placed trade can later be
+    matched against what the bot actually said. Never raises — a journaling
+    failure must not cost you the alert."""
+    if journal is None:
+        return "(journal unavailable)"
+    try:
+        sz = position_size(sig, balance, risk) or {}
+        aid = journal.log_alert(
+            sig, risk_pct=risk * 100.0, balance=balance,
+            units=(abs(sz["units"]) if not sz.get("too_small") and sz.get("units") else None),
+            risk_usd=sz.get("risk_usd"), too_small=sz.get("reason"))
+        return aid
+    except Exception as e:
+        return f"(journal error: {str(e)[:40]})"
+
+
 # ---- 1b. position sizing for MANUAL entry (alert-only gold) ------------------
+def position_size(sig, balance: float, risk_fraction: float):
+    """The sizing dict for a signal, or None if it cannot be computed.
+
+    Split out from position_size_hint() so scanner.py can both format the alert
+    AND write the numbers into the journal.
+    """
+    if sig.action != "SETUP" or sig.entry is None or sig.stop is None:
+        return None
+    try:
+        from oanda_feed import resolve_instrument, size_position
+    except Exception:
+        return None
+    try:
+        return size_position(resolve_instrument(sig.symbol), balance,
+                             risk_fraction, sig.entry, sig.stop)
+    except Exception:
+        return None
+
+
 def position_size_hint(sig, balance: float, risk_fraction: float) -> str:
     """One line telling you exactly what to enter by hand.
 
@@ -109,21 +150,19 @@ def position_size_hint(sig, balance: float, risk_fraction: float) -> str:
     if sig.action != "SETUP" or sig.entry is None or sig.stop is None:
         return ""
     try:
-        from oanda_feed import resolve_instrument, size_position
+        from oanda_feed import resolve_instrument
     except Exception as e:
         return f"(sizing unavailable: {str(e)[:40]})"
-    try:
-        inst = resolve_instrument(sig.symbol)
-        s = size_position(inst, balance, risk_fraction, sig.entry, sig.stop)
-    except Exception as e:
-        return f"(sizing error: {str(e)[:40]})"
+    s = position_size(sig, balance, risk_fraction)
+    if s is None:
+        return "(sizing unavailable)"
     if s.get("too_small"):
         return (f"⚠️ CANNOT SIZE: {s.get('reason')} — widen the balance or the "
                 f"risk %, or skip this setup")
     # size_position() returns an unsigned magnitude; direction comes from the
     # signal, NOT from the sign of units (that sign is applied by the broker).
     side = "BUY" if sig.direction == Direction.BULL else "SELL"
-    return (f"📐 {side} {abs(s['units']):.2f} units {inst}  |  "
+    return (f"📐 {side} {abs(s['units']):.2f} units {resolve_instrument(sig.symbol)}  |  "
             f"risks ${s['risk_usd']:,.2f} = {s['risk_pct']:.1f}% of "
             f"${balance:,.2f}  |  stop width {abs(sig.entry - sig.stop):.2f}")
 
@@ -228,19 +267,26 @@ def scan_once(feed: DataFeed, notifier: Notifier, gov: Governor, broker=None,
         if sig.action == "SETUP":
             if sym in ALERT_ONLY:                # gold: alert + size + Kalshi confluence, no execution
                 size_line = position_size_hint(sig, balance, risk)
+                aid = _journal_alert(sig, balance, risk)
+                print(f"  [journal] logged {aid} — record your fill with: "
+                      f"python3 journal.py fill {aid} --price <fill> --units <size>")
                 notifier.send_text(
                     f"🟡 ALERT-ONLY SETUP — {sym} {sig.direction.value.upper()}\n"
                     f"entry {sig.entry} | stop {sig.stop} | TP {sig.target} | R:R {sig.rr:.2f}\n"
                     f"{size_line}\n"
                     f"{_kalshi_line(sym, htf[-1].c)}\n"
                     f"(gold is alert-only: place this manually. Size computed at "
-                    f"{risk * 100:.1f}% risk. Kalshi = crowd confluence, informational.)")
+                    f"{risk * 100:.1f}% risk. Kalshi = crowd confluence, informational.)\n"
+                    f"journal id {aid} -> python3 journal.py fill {aid} --price <fill> "
+                    f"--units <size>")
             elif not gov.can_trade(taken):
                 notifier.send(Signal("NO_TRADE", sym, sig.direction,
                     f"setup found but weekly cap reached ({taken}/{gov.max_per_week}) — DO NOT CHASE",
                     when=sig.when, checks={"cap": f"{taken}/{gov.max_per_week}"}))
             else:
                 notifier.send(sig)
+                aid = _journal_alert(sig, balance, risk)
+                print(f"  [journal] logged {aid}")
                 if broker is not None:           # managed paper auto-execution
                     res = trade_manager.open_trade(broker, sig)
                     print(f"  [paper] {sym}: {res}")

@@ -264,6 +264,18 @@ def section_monte_carlo(start, goal, edge, risk_pct, per_week, paths, max_years,
           f"{per_week:.1f} trades/week (scanner.Governor)")
     print(f"  Paths          : {r['paths']:,} careers, cap {max_years:.0f} years "
           f"({int(max_years * WEEKS_PER_YEAR * per_week)} trades)")
+    if start < floor:
+        # Without this, a below-floor start reads as "the method failed". It did
+        # not — the account simply cannot open a legal gold lot, so ruin is
+        # structural and the edge never got a vote.
+        print("-" * 74)
+        print(f"  ⚠️  STARTING BALANCE ${start:,.2f} IS BELOW THE LEGAL ORDER FLOOR")
+        print(f"     Gold's minimum lot (0.01 u x a typical ${GOLD_TYP_STOP:.0f} 4H stop)")
+        print(f"     risks more than {risk_pct:.0f}% of ${start:,.2f} allows. Every path is")
+        print(f"     'ruined' on trade 1 for that reason alone — the edge you measured")
+        print(f"     was never tested. This is a STRUCTURAL result, not a verdict.")
+        print(f"     Minimum viable start at {risk_pct:.0f}% risk: ${floor:,.2f}.")
+        print(f"     Re-run with a real balance, e.g.:  --start {max(floor * 2, 2500):,.0f}")
     print("-" * 74)
     print(f"  Reached ${goal:,.0f}   : {r['hit_goal']:,} / {r['paths']:,}  "
           f"= {100 * r['hit_goal'] / r['paths']:.2f}%")
@@ -427,6 +439,41 @@ def edge_from_demo(cost_r: float) -> Edge | None:
                 avg_loss_r=1.0, cost_r=cost_r)
 
 
+def edge_from_journal() -> Edge | None:
+    """Build an Edge from YOUR hand-placed gold trades in journal.py.
+
+    Measured R already includes real spread, real slippage and your actual trade
+    management, so cost_r stays 0.0 here — adding the modelled cost on top would
+    double-count it. This is the most honest edge this tool can use.
+    """
+    try:
+        import journal
+    except Exception as e:
+        print(f"  (could not import journal: {e})")
+        return None
+    try:
+        s = journal.stats_r(journal.closed_trades())
+    except Exception as e:
+        print(f"  (could not read the journal: {e})")
+        return None
+    if not s or s["n"] < 10:
+        print(f"  (only {s['n'] if s else 0} closed journal trades — need >=10 for a "
+              f"meaningful edge. Record fills/exits with:\n"
+              f"     python3 journal.py fill --last --price <fill> --units <size>\n"
+              f"     python3 journal.py exit --last --price <exit> --reason tp)")
+        return None
+    pf = s["profit_factor"]
+    pf_s = "inf" if pf == float("inf") else f"{pf:.2f}"
+    print(f"  Using YOUR journal: {s['n']} hand-placed trades, {s['win_rate']:.1f}% win "
+          f"rate, +{s['avg_win_r']:.2f}R winners / -{s['avg_loss_r']:.2f}R losers")
+    print(f"                   measured expectancy {s['expectancy_r']:+.3f}R/trade, "
+          f"profit factor {pf_s}")
+    print(f"                   avg entry slippage {s['avg_slippage_r']:+.3f}R vs the alert "
+          f"(already inside these numbers)")
+    return Edge(win_rate=s["win_rate"] / 100.0, avg_win_r=s["avg_win_r"],
+                avg_loss_r=max(s["avg_loss_r"], 1e-9), cost_r=0.0)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Can $1 become $1,000,000? Let's do the math.")
     ap.add_argument("--start", type=float, default=1.0)
@@ -446,6 +493,9 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--from-demo", action="store_true",
                     help="derive the edge from your real OANDA practice history")
+    ap.add_argument("--from-journal", action="store_true",
+                    help="derive the edge from YOUR hand-placed gold trades in "
+                         "journal.py (measured R, costs already included)")
     ap.add_argument("--min-account", action="store_true", help="only print section 3")
     # Section 4 (the published backtest) prints by default; --measured is
     # accepted because CAVEATS.md documents that exact command, and
@@ -463,7 +513,13 @@ def main() -> int:
 
     edge = Edge(win_rate=a.win_rate / 100.0, avg_win_r=a.avg_win_r,
                 avg_loss_r=a.avg_loss_r, cost_r=a.cost_r)
-    if a.from_demo:
+    if a.from_journal:
+        real = edge_from_journal()
+        if real is None:
+            print("  Falling back to the assumed edge.\n")
+        else:
+            edge = real
+    elif a.from_demo:
         real = edge_from_demo(a.cost_r)
         if real is None:
             print("  Falling back to the assumed edge.\n")
@@ -503,9 +559,13 @@ def main() -> int:
     print("      risk. Collect 50+ closed trades, then run:  python3 trade_stats.py")
     print("      Positive expectancy over 50+ trades is the ONLY thing worth knowing")
     print("      right now, and it is the thing almost nobody actually has.")
-    print("    - Re-run this file with --from-demo once that history exists. It will")
-    print("      swap the assumed edge for your measured one and tell you honestly")
-    print("      what it compounds to. Most likely answer: not $1,000,000.")
+    print("    - Gold is alert-only, so your real record lives in journal.py, not")
+    print("      in OANDA. Log every fill, every exit, and every SKIP:")
+    print("        python3 journal.py fill --last --price <fill> --units <size>")
+    print("        python3 journal.py exit --last --price <exit> --reason tp")
+    print("      Then: python3 compound_reality.py --from-journal")
+    print("      That swaps the assumed edge for your measured one — costs and")
+    print("      slippage included — and tells you honestly what it compounds to.")
     print("    - Real capital enters after the demo edge survives months, and it")
     print("      enters as savings from income. Income is the only reliable way to")
     print("      add zeroes; trading multiplies whatever zeroes are already there.")

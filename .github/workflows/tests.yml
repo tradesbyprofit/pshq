@@ -35,5 +35,17 @@ jobs:
       - name: No-trade zone + swing detection
         run: python3 test_no_trade_zone.py
 
+      # Gold is alert-only, so the journal IS the real track record — its R
+      # arithmetic and slippage sign convention are load-bearing for
+      # compound_reality.py --from-journal and must not silently drift.
+      - name: Trade journal (alert-vs-actual record, expectancy in R)
+        run: python3 test_journal.py
+
+      - name: trade_stats reads the journal with no OANDA keys
+        run: python3 trade_stats.py --source journal
+
       - name: Reality-check calculator (smoke run)
         run: python3 compound_reality.py --paths 50 --max-years 5
+
+      - name: Reality-check calculator can consume a journal edge
+        run: python3 compound_reality.py --from-journal --paths 50 --max-years 5
